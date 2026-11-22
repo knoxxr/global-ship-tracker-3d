@@ -18,6 +18,17 @@ export function escapeHtml(str) {
     .replaceAll('"', '&quot;');
 }
 
+/**
+ * Compact human-readable AIS source label (long station keys like
+ * "station:ed25519:rTY-..." become "station"), full value kept in inspector & CSV.
+ */
+export function shortSource(src) {
+  const s = String(src || 'live');
+  if (s.length <= 14 && !s.includes(':')) return s;
+  const head = s.split(':')[0];
+  return head.length > 14 ? `${head.slice(0, 13)}…` : head;
+}
+
 export function formatCoordShort(val, isLat) {
   const hemi = isLat ? (val >= 0 ? 'N' : 'S') : (val >= 0 ? 'E' : 'W');
   return `${Math.abs(Number(val) || 0).toFixed(2)}°${hemi}`;
@@ -89,7 +100,7 @@ export function renderHoverTooltipHtml(v) {
       <div>${formatDms(v.lat, true)} / ${formatDms(v.lon, false)}</div>
       <div>${v.sog} kn (${kmh} km/h) · ${v.cog}° ${compass16(v.cog)}</div>
       <div>목적지: ${escapeHtml(v.destination || '미보고')} · 수신: ${formatAge(v.updatedAt)}</div>
-      <div>출처: ${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}${v.trail && v.trail.length > 1 ? ` · 항적 ${v.trail.length}점` : ''}</div>
+      <div>출처: ${escapeHtml(shortSource(v.source))}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}${v.trail && v.trail.length > 1 ? ` · 항적 ${v.trail.length}점` : ''}</div>
     </div>
   `;
 }
@@ -189,7 +200,7 @@ export function renderVirtualVesselList(
         </div>
         <div class="vessel-item-sub" style="font-size:10px;">
           <span>목적지: ${escapeHtml(v.destination || '미보고')}</span>
-          <span class="mono">${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}m` : ''}</span>
+          <span class="mono">${escapeHtml(shortSource(v.source))}${v.length ? ` · ${v.length}m` : ''}</span>
         </div>
       </button>
     `;
@@ -236,7 +247,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
         <div class="badge-row">
           <span class="mini-badge mono">${escapeHtml(v.aisClass || 'Class A')}</span>
           <span class="mini-badge">${escapeHtml(v.flagName || v.flagCode)} (${escapeHtml(v.flagCode || '-')})</span>
-          <span class="mini-badge mono">SRC: ${escapeHtml(v.source || 'live')}</span>
+          <span class="mini-badge mono">SRC: ${escapeHtml(shortSource(v.source))}</span>
           ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">상세·24시간 항적 조회 중...</span>` : ''}
         </div>
       </div>
@@ -363,7 +374,7 @@ export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi) 
         <td class="mono">${v.cog}° ${compass16(v.cog)}</td>
         <td class="mono">${escapeHtml(v.destination || '-')}</td>
         <td class="mono">${v.length ? `${v.length}×${v.beam ?? '?'}m / ${v.draught ?? '-'}m` : '-'}</td>
-        <td class="mono">${escapeHtml(v.source || 'live')}</td>
+        <td class="mono">${escapeHtml(shortSource(v.source))}</td>
         <td class="mono">${formatAge(v.updatedAt)}</td>
       </tr>
     `;
