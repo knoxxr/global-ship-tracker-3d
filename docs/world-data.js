@@ -1,7 +1,10 @@
 /**
- * World landmass polygons ([lon, lat] rings), major maritime ports,
- * shipping corridor overlays, and 3D camera presets for MarineGlobe 3D.
+ * High-resolution world map metadata: imports Natural Earth 50m coastlines,
+ * 110m country borders, and major lakes from ./world-geo.js, and provides
+ * 38 world ports, 22 sea/strait labels, shipping corridors, and vessel type styles.
  */
+
+export { WORLD_POLYGONS, COUNTRY_BORDERS, WORLD_LAKES } from './world-geo.js';
 
 export const VESSEL_TYPES = {
   container: { label: '컨테이너선', short: '컨테이너', color: '#10b981' },
@@ -12,33 +15,73 @@ export const VESSEL_TYPES = {
   special:   { label: '특수/조사선', short: '특수선',  color: '#94a3b8' },
 };
 
-export const CAMERA_PRESETS = [
-  { id: 'global',    label: '전 세계',       lat: 20,   lon: 118,  zoom: 1.0 },
-  { id: 'korea',     label: '한반도·동북아', lat: 34.5, lon: 128.5, zoom: 3.4 },
-  { id: 'malacca',   label: '말라카·싱가포르', lat: 3.5, lon: 102.5, zoom: 3.2 },
-  { id: 'suez',      label: '수에즈·지중해',  lat: 30.0, lon: 29.0, zoom: 2.8 },
-  { id: 'europe',    label: '유럽·북해',     lat: 50.5, lon: 3.5,  zoom: 3.0 },
-  { id: 'panama',    label: '파나마·미주',    lat: 16.0, lon: -81.0, zoom: 2.5 },
+export const PORTS_DATA = [
+  // Korea
+  { code: 'KRPUS', name: '부산', lat: 35.10, lon: 129.04, major: true },
+  { code: 'KRINC', name: '인천', lat: 37.45, lon: 126.60, major: false },
+  { code: 'KRUSN', name: '울산', lat: 35.50, lon: 129.38, major: false },
+  { code: 'KRKAN', name: '광양', lat: 34.91, lon: 127.69, major: false },
+  { code: 'KRPTK', name: '평택', lat: 36.96, lon: 126.82, major: false },
+  { code: 'KRKPO', name: '포항', lat: 36.04, lon: 129.41, major: false },
+  { code: 'KRCHA', name: '제주', lat: 33.52, lon: 126.54, major: false },
+  // East & Southeast Asia
+  { code: 'CNSHA', name: '상하이', lat: 31.23, lon: 121.47, major: true },
+  { code: 'CNNGB', name: '닝보', lat: 29.87, lon: 121.85, major: false },
+  { code: 'CNTAO', name: '칭다오', lat: 36.07, lon: 120.32, major: false },
+  { code: 'HKHKG', name: '홍콩', lat: 22.30, lon: 114.17, major: true },
+  { code: 'TWKHH', name: '가오슝', lat: 22.61, lon: 120.28, major: false },
+  { code: 'JPYOK', name: '도쿄·요코하마', lat: 35.44, lon: 139.64, major: true },
+  { code: 'JPOSA', name: '오사카·고베', lat: 34.65, lon: 135.42, major: false },
+  { code: 'SGSIN', name: '싱가포르', lat: 1.26, lon: 103.82, major: true },
+  { code: 'MYPKG', name: '포트클랑', lat: 3.00, lon: 101.39, major: false },
+  { code: 'LKCMB', name: '콜롬보', lat: 6.95, lon: 79.85, major: false },
+  // Middle East & Africa
+  { code: 'AEJEA', name: '두바이', lat: 25.01, lon: 55.06, major: true },
+  { code: 'EGPSD', name: '수에즈', lat: 31.26, lon: 32.31, major: true },
+  { code: 'ZACPT', name: '케이프타운', lat: -33.91, lon: 18.43, major: true },
+  // Europe
+  { code: 'NLRTM', name: '로테르담', lat: 51.95, lon: 4.13, major: true },
+  { code: 'BEANR', name: '앤트워프', lat: 51.26, lon: 4.38, major: false },
+  { code: 'DEHAM', name: '함부르크', lat: 53.54, lon: 9.97, major: false },
+  { code: 'GBSOU', name: '사우샘프턴', lat: 50.89, lon: -1.40, major: false },
+  { code: 'NOOSL', name: '오슬로', lat: 59.90, lon: 10.74, major: false },
+  { code: 'FIHEL', name: '헬싱키', lat: 60.16, lon: 24.95, major: false },
+  { code: 'SESTO', name: '스톡홀름', lat: 59.33, lon: 18.10, major: false },
+  { code: 'GRPIR', name: '피레우스', lat: 37.94, lon: 23.64, major: true },
+  { code: 'ESALG', name: '지브롤터', lat: 36.13, lon: -5.36, major: false },
+  { code: 'FRMRS', name: '마르세유', lat: 43.33, lon: 5.34, major: false },
+  // Americas & Oceania
+  { code: 'USLAX', name: 'LA·롱비치', lat: 33.74, lon: -118.27, major: true },
+  { code: 'USSFO', name: '샌프란시스코', lat: 37.80, lon: -122.40, major: false },
+  { code: 'USNYC', name: '뉴욕', lat: 40.67, lon: -74.04, major: true },
+  { code: 'USHOU', name: '휴스턴', lat: 29.73, lon: -95.27, major: false },
+  { code: 'PAPTY', name: '파나마', lat: 8.95, lon: -79.56, major: true },
+  { code: 'BRSSZ', name: '산토스', lat: -23.96, lon: -46.30, major: true },
+  { code: 'AUSYD', name: '시드니', lat: -33.85, lon: 151.21, major: true },
+  { code: 'AUMEL', name: '멜버른', lat: -37.84, lon: 144.92, major: false },
 ];
 
-export const PORTS_DATA = [
-  { code: 'KRPUS', name: '부산',     lat: 35.10, lon: 129.04, major: true },
-  { code: 'KRINC', name: '인천',     lat: 37.45, lon: 126.60, major: false },
-  { code: 'CNSHA', name: '상하이',   lat: 31.23, lon: 121.47, major: true },
-  { code: 'HKHKG', name: '홍콩',     lat: 22.30, lon: 114.17, major: false },
-  { code: 'JPYOK', name: '요코하마', lat: 35.44, lon: 139.64, major: true },
-  { code: 'SGSIN', name: '싱가포르', lat: 1.26,  lon: 103.82, major: true },
-  { code: 'AEJEA', name: '두바이',   lat: 25.01, lon: 55.06,  major: true },
-  { code: 'EGPSD', name: '수에즈',   lat: 31.26, lon: 32.31,  major: true },
-  { code: 'NLRTM', name: '로테르담', lat: 51.95, lon: 4.13,   major: true },
-  { code: 'DEHAM', name: '함부르크', lat: 53.54, lon: 9.97,   major: false },
-  { code: 'GRPIR', name: '피레우스', lat: 37.94, lon: 23.64,  major: false },
-  { code: 'USLAX', name: 'LA',       lat: 33.74, lon: -118.27, major: true },
-  { code: 'USNYC', name: '뉴욕',     lat: 40.67, lon: -74.04, major: true },
-  { code: 'PAPTY', name: '파나마',   lat: 8.95,  lon: -79.56, major: true },
-  { code: 'BRSSZ', name: '산토스',   lat: -23.96, lon: -46.30, major: true },
-  { code: 'ZACPT', name: '케이프타운', lat: -33.91, lon: 18.43, major: true },
-  { code: 'AUSYD', name: '시드니',   lat: -33.85, lon: 151.21, major: true },
+export const SEA_LABELS = [
+  { name: '북태평양', lat: 30, lon: -165, minZoom: 0.8, maxZoom: 2.4 },
+  { name: '남태평양', lat: -25, lon: -135, minZoom: 0.8, maxZoom: 2.4 },
+  { name: '북대서양', lat: 32, lon: -42, minZoom: 0.8, maxZoom: 2.4 },
+  { name: '남대서양', lat: -22, lon: -16, minZoom: 0.8, maxZoom: 2.4 },
+  { name: '인도양', lat: -15, lon: 78, minZoom: 0.8, maxZoom: 2.4 },
+  { name: '동해 (East Sea)', lat: 38.2, lon: 133.2, minZoom: 2.0, maxZoom: 18 },
+  { name: '황해 (Yellow Sea)', lat: 35.4, lon: 123.6, minZoom: 2.2, maxZoom: 18 },
+  { name: '대한해협', lat: 34.4, lon: 129.3, minZoom: 3.4, maxZoom: 18 },
+  { name: '동중국해', lat: 28.5, lon: 125.0, minZoom: 2.0, maxZoom: 18 },
+  { name: '남중국해', lat: 14.5, lon: 113.5, minZoom: 1.6, maxZoom: 18 },
+  { name: '말라카 해협', lat: 3.2, lon: 100.3, minZoom: 2.6, maxZoom: 18 },
+  { name: '페르시아만', lat: 26.8, lon: 51.8, minZoom: 2.4, maxZoom: 18 },
+  { name: '호르무즈 해협', lat: 26.5, lon: 56.4, minZoom: 3.2, maxZoom: 18 },
+  { name: '홍해', lat: 20.5, lon: 38.5, minZoom: 2.0, maxZoom: 18 },
+  { name: '지중해', lat: 35.8, lon: 18.0, minZoom: 1.8, maxZoom: 18 },
+  { name: '북해 (North Sea)', lat: 55.8, lon: 3.2, minZoom: 2.0, maxZoom: 18 },
+  { name: '도버 해협', lat: 51.0, lon: 1.5, minZoom: 3.8, maxZoom: 18 },
+  { name: '발트해', lat: 58.2, lon: 20.2, minZoom: 2.2, maxZoom: 18 },
+  { name: '카리브해', lat: 15.5, lon: -74.5, minZoom: 1.8, maxZoom: 18 },
+  { name: '멕시코만', lat: 25.0, lon: -90.0, minZoom: 1.8, maxZoom: 18 },
 ];
 
 export const CORRIDOR_LINES = [
@@ -50,125 +93,4 @@ export const CORRIDOR_LINES = [
   [[51.9, 3.8], [49.4, -5.2], [43.0, -10.5], [32.0, -14.0], [16.0, -19.5], [0.0, -11.0], [-18.0, 4.0], [-34.5, 18.0], [-35.5, 22.0], [-29.0, 40.0], [-18.0, 62.0], [-6.0, 86.0], [1.2, 103.5]],
   [[-24.2, -46.2], [-18.0, -37.5], [-6.0, -33.5], [8.0, -27.5], [22.0, -21.0], [36.0, -12.5], [44.0, -9.8], [49.5, -4.5], [51.9, 3.8]],
   [[-33.8, 151.6], [-26.0, 154.5], [-16.0, 153.5], [-6.0, 152.0], [4.0, 148.0], [16.0, 144.0], [27.5, 141.0], [35.2, 139.8]],
-];
-
-/**
- * Simplified yet geographically accurate continental and major island coastlines.
- * Coordinates are [lon, lat] degrees.
- */
-export const WORLD_POLYGONS = [
-  // North America + Central America
-  [
-    [-166, 65], [-162, 70], [-150, 70.5], [-136, 69], [-124, 70], [-110, 68.5],
-    [-95, 68], [-82, 66], [-78, 62], [-80, 56], [-92, 57], [-95, 62],
-    [-85, 63], [-75, 62], [-64, 60], [-56, 52], [-60, 46], [-66, 44.5],
-    [-70, 42], [-74, 40.5], [-75.5, 36], [-80.5, 32], [-80.2, 25.5], [-82, 25.5],
-    [-82.8, 29], [-89, 29.5], [-97, 26], [-96, 19.5], [-90, 21.3], [-87, 21],
-    [-88, 16], [-83.5, 14.5], [-83, 10], [-79.8, 9.3], [-77.5, 8.5], [-78.5, 7.6],
-    [-82, 8.2], [-86, 11], [-92, 14.5], [-100, 16.5], [-105.5, 20.5], [-109.5, 24],
-    [-112, 31], [-114.5, 31.5], [-110, 23], [-114, 27], [-117.2, 32.5],
-    [-121, 35], [-124.5, 40.5], [-124.5, 48.3], [-130, 54], [-138, 59],
-    [-148, 60.5], [-156, 57], [-162, 55], [-166, 60], [-166, 65],
-  ],
-  // Greenland
-  [
-    [-52, 60], [-42, 60.5], [-35, 66], [-22, 70], [-18, 77], [-22, 82],
-    [-40, 83], [-58, 81], [-70, 77], [-56, 72], [-53, 66], [-52, 60],
-  ],
-  // Cuba & Hispaniola
-  [[-84.8, 21.8], [-82, 23.1], [-78, 22.1], [-74.3, 20.2], [-77, 19.9], [-81, 22.1], [-84.8, 21.8]],
-  [[-74.4, 18.4], [-71.5, 19.9], [-68.4, 18.6], [-71.6, 17.7], [-74.4, 18.4]],
-  // South America
-  [
-    [-77.5, 8.5], [-75.5, 10.8], [-71.5, 12], [-66, 10.5], [-61.5, 10],
-    [-55, 6], [-50, 1.5], [-42, -2.8], [-35, -6], [-35, -9.5], [-39, -15],
-    [-41, -22.5], [-46, -24], [-49, -28], [-53.5, -34], [-58, -38.5],
-    [-65, -42], [-66, -47], [-68.5, -52.5], [-66, -55], [-71, -55.5],
-    [-75, -50], [-74, -42], [-72, -35], [-71, -26], [-70.5, -18.5],
-    [-76.5, -14], [-81, -5], [-80, 1], [-78, 5.5], [-77.5, 8.5],
-  ],
-  // Eurasia (Europe + Asia including Korean Peninsula, Malay Peninsula, India, Arabia)
-  [
-    // Western Europe -> Iberia -> Mediterranean
-    [-9.2, 38.7], [-9.2, 43], [-2, 43.4], [-4.5, 48.4], [1.8, 51], [4.5, 52.3],
-    [8.5, 54], [8.2, 57], [10.5, 57.7], [10.2, 54.5], [14, 54], [20, 55],
-    [24, 59.5], [29, 60], [22, 63.5], [24, 65.8], [20, 63.5], [17, 59],
-    [13, 55.5], [11, 59], [5.5, 59], [5, 62], [12, 66], [20, 70], [31, 70],
-    [40, 67], [44, 66], [52, 68.5], [68, 70.5], [75, 72.5], [90, 75],
-    [106, 77.2], [124, 73.5], [142, 72.5], [162, 69.5], [178, 66.5],
-    // Russian Far East -> Kamchatka -> Sea of Okhotsk
-    [172, 60.5], [162, 59], [162, 54], [156.5, 51], [158, 57], [150, 59.5],
-    [140, 57], [136, 54], [141, 52], [139, 47], [135, 43.5], [131, 42.6],
-    // Korean Peninsula (East Coast -> Busan -> South/West Coast -> Yellow Sea)
-    [129.4, 38.5], [129.4, 35.1], [127.8, 34.7], [126.2, 34.6], [126.4, 36.8],
-    [125.5, 38.2], [124.3, 39.8],
-    // China -> Indochina -> Malay Peninsula
-    [121.8, 39], [119.5, 39.8], [118, 38.5], [122.4, 37], [120, 35],
-    [121.8, 31.3], [121.5, 29], [119.5, 25], [114.2, 22.3], [110, 20.5],
-    [108, 21.5], [106, 18], [109.3, 13], [106.5, 9.5], [104.5, 10.5],
-    [100.5, 13.5], [100, 10], [103.5, 4], [103.8, 1.4], [102, 2.2],
-    [100, 5.5], [98.5, 10], [97.5, 16], [94.5, 16.5], [92.2, 21.5],
-    // Bangladesh -> India -> Pakistan
-    [89, 22], [85, 19.5], [80.3, 13], [77.5, 8.1], [75, 12.5], [72.8, 19],
-    [69, 22.5], [66.8, 24.8], [61.5, 25.2],
-    // Iran -> Persian Gulf -> Arabian Peninsula -> Red Sea -> Suez
-    [56.5, 27], [51, 29.8], [48.5, 30], [50.2, 26], [54.5, 24.5], [56.3, 26],
-    [59.5, 22.5], [54, 17], [45, 12.8], [43.4, 12.6], [41, 17], [38.5, 22],
-    [35, 28], [34.4, 27.9], [32.6, 29.9],
-    // Levant -> Anatolia -> Black Sea -> Greece -> Italy -> France -> Spain
-    [34.5, 31.5], [36, 36.2], [30, 36.5], [26.5, 38.5], [29, 41.2],
-    [36, 41.5], [41.5, 41.5], [39, 44.5], [33.5, 45.2], [30.5, 46.2],
-    [28.5, 42], [26, 40.5], [23.8, 37.8], [22, 36.5], [20, 40], [14, 45.5],
-    [13, 44], [16, 41.5], [18.4, 40.1], [15.7, 38], [13.5, 41.2], [9, 44.4],
-    [5, 43.3], [3, 42.3], [0, 39], [-5.4, 36], [-9.2, 38.7],
-  ],
-  // Africa
-  [
-    [-5.8, 35.8], [3, 36.8], [10.5, 37], [11.5, 33], [20, 32], [25, 31.5],
-    [32.4, 31.2], [33.8, 27.5], [37.5, 21.5], [40, 15.5], [43.2, 12.2],
-    [51.2, 11.8], [49, 6], [41, -1.5], [39.5, -7], [40.5, -14], [35, -20],
-    [32.8, -26], [28, -33], [20, -34.8], [18.3, -34], [15, -26], [12, -16],
-    [12.5, -6], [9, 0], [9.5, 4], [3, 6.4], [-4, 5], [-8, 4.5],
-    [-13.5, 9], [-17.4, 14.7], [-16, 21], [-13, 28], [-9.5, 31], [-5.8, 35.8],
-  ],
-  // Madagascar
-  [[49.3, -12.2], [50.3, -15.5], [47, -25], [44, -25], [44.2, -19.5], [47.5, -15], [49.3, -12.2]],
-  // UK & Ireland
-  [[-5.5, 50.1], [1.4, 51.2], [1.7, 52.8], [-1.5, 55.5], [-2, 57.7], [-5, 58.6], [-5.6, 55.5], [-3.2, 53.3], [-5.2, 51.7], [-5.5, 50.1]],
-  [[-10.2, 51.8], [-6.2, 52.3], [-6, 54.5], [-8.5, 55.2], [-10, 53.5], [-10.2, 51.8]],
-  // Iceland
-  [[-24, 64], [-18, 63.5], [-13.8, 65.2], [-16.5, 66.4], [-23.5, 65.8], [-24, 64]],
-  // Japan (Honshu + Kyushu + Hokkaido)
-  [[130.5, 31.3], [132, 33.5], [135.5, 33.5], [139.8, 35.1], [141, 36.5], [141.8, 40.5], [140.2, 41.2], [139, 38], [136.5, 37], [132.5, 35.3], [130, 33.5], [130.5, 31.3]],
-  [[140, 41.8], [143.5, 42.2], [145.5, 43.3], [144.5, 44.3], [141.7, 45.4], [140, 43.3], [140, 41.8]],
-  // Taiwan
-  [[120.2, 22.5], [120.9, 22], [121.9, 25.1], [121, 25], [120.2, 22.5]],
-  // Philippines (Luzon + Mindanao)
-  [[120, 14.5], [121.5, 13.5], [123.5, 13.5], [122.4, 18.2], [120.5, 18.4], [119.8, 16], [120, 14.5]],
-  [[122, 6.8], [125.5, 5.8], [126.5, 7.5], [125.5, 9.6], [123.5, 8.5], [122, 6.8]],
-  // Indonesia (Sumatra, Java, Borneo, Sulawesi)
-  [[95.3, 5.5], [99, 3.5], [103.5, 0], [105.8, -5.8], [104, -5.8], [100.5, -1.5], [97.5, 2], [95.3, 5.5]],
-  [[105.5, -6.2], [114.4, -7.8], [114.2, -8.6], [106.5, -7.2], [105.5, -6.2]],
-  [[109, 1.5], [115, 5], [118.5, 5.5], [117.5, 1], [116, -3.8], [111.5, -3.2], [109, -1], [109, 1.5]],
-  [[119, -5.2], [122.5, -4.5], [125, 1.4], [121, 1], [119.2, -1], [119, -5.2]],
-  // Sri Lanka
-  [[79.8, 9.5], [81.8, 7.5], [80.7, 6], [79.8, 7], [79.8, 9.5]],
-  // Papua New Guinea
-  [[131, -1.5], [136, -2], [141, -2.5], [147, -6.5], [150.5, -10.2], [147, -9.5], [143, -8.5], [138, -7.5], [132.5, -3.5], [131, -1.5]],
-  // Australia & Tasmania
-  [
-    [114, -22], [122, -18], [129, -14.5], [136.5, -12.3], [141, -16],
-    [142.5, -10.8], [146, -18], [153.5, -28], [150, -37.5], [141, -38],
-    [136, -35], [129, -31.8], [121, -33.8], [115, -34.2], [113.5, -26], [114, -22],
-  ],
-  [[144.8, -41], [148.2, -41], [147.2, -43.5], [145.5, -42.5], [144.8, -41]],
-  // New Zealand (North & South Islands)
-  [[172.8, -34.5], [178.5, -37.7], [175.2, -41.4], [174, -39.2], [174.5, -36.5], [172.8, -34.5]],
-  [[173.8, -41], [170.5, -46], [166.6, -46], [170.2, -43], [172.5, -40.7], [173.8, -41]],
-  // Antarctica
-  [
-    [-180, -74], [-150, -76], [-120, -73], [-90, -73], [-62, -64], [-55, -72],
-    [-25, -75], [0, -70], [35, -69], [70, -68.5], [110, -66.5], [145, -67.5],
-    [170, -72], [180, -74], [180, -89.5], [-180, -89.5], [-180, -74],
-  ],
 ];

@@ -22,6 +22,7 @@ import {
   formatCoordShort,
   sortVessels,
   renderHoverTooltipHtml,
+  renderClusterTooltipHtml,
   renderFleetSummaryHtml,
   renderVirtualVesselList,
   renderInspectorBodyHtml,
@@ -30,6 +31,7 @@ import {
 } from './telemetry-ui.js';
 
 const MAX_VESSELS = 60000;
+const TRACK_CACHE_MS = 10 * 60 * 1000;
 
 async function runPool(items, concurrency, fn) {
   let idx = 0;
@@ -64,12 +66,15 @@ const state = {
   msgCounter: 0,
   msgPerSec: 0,
   vesselsMap: new Map(),
+  trackFetchedAt: new Map(),
+  loadingTracks: false,
   allVessels: [],
   filteredVessels: [],
   selectedMmsi: null,
   loadingDetailsMmsi: null,
   followSelected: false,
   activeType: 'all',
+  movingOnly: false,
   searchQuery: '',
   sortBy: 'recent-desc',
   theme: 'dark',
@@ -97,10 +102,13 @@ const dom = {
   btnZoomIn: document.getElementById('btn-zoom-in'),
   btnZoomOut: document.getElementById('btn-zoom-out'),
   btnScanView: document.getElementById('btn-scan-view'),
+  btnLoadTracks: document.getElementById('btn-load-tracks'),
   btnRefreshLive: document.getElementById('btn-refresh-live'),
+  btnClusters: document.getElementById('btn-clusters'),
+  btnMovingOnly: document.getElementById('btn-moving-only'),
+  btnBorders: document.getElementById('btn-borders'),
   btnAutoRotate: document.getElementById('btn-autorotate'),
   btnDayNight: document.getElementById('btn-daynight'),
-  btnLanes: document.getElementById('btn-lanes'),
   btnWakes: document.getElementById('btn-wakes'),
   btnPorts: document.getElementById('btn-ports'),
   btnLabels: document.getElementById('btn-labels'),
@@ -124,6 +132,9 @@ const dom = {
   btnSaveApi: document.getElementById('btn-save-api'),
 };
 
+let autoTrackTimer = null;
+let lastAutoTrackKey = '';
+
 const globe = new GlobeEngine(dom.canvas, {
   initialLat: 28,
   initialLon: 124,
@@ -140,8 +151,28 @@ const globe = new GlobeEngine(dom.canvas, {
     dom.hoverTooltip.style.top = `${Math.max(70, my - 12)}px`;
     dom.hoverTooltip.classList.remove('hidden');
   },
+  onHoverCluster: (cluster, mx, my) => {
+    if (!cluster) {
+      dom.hoverTooltip.classList.add('hidden');
+      return;
+    }
+    dom.hoverTooltip.innerHTML = renderClusterTooltipHtml(cluster);
+    dom.hoverTooltip.style.left = `${Math.min(window.innerWidth - 290, mx + 14)}px`;
+    dom.hoverTooltip.style.top = `${Math.max(70, my - 12)}px`;
+    dom.hoverTooltip.classList.remove('hidden');
+  },
   onCameraChange: ({ lat, lon, zoom }) => {
     dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom.toFixed(1)}x`;
+    if (zoom >= 2.8 && globe.options.showWakes) {
+      const key = `${Math.round(lat / 2)}:${Math.round(lon / 2)}:${Math.round(zoom)}`;
+      if (key !== lastAutoTrackKey) {
+        lastAutoTrackKey = key;
+        clearTimeout(autoTrackTimer);
+        autoTrackTimer = setTimeout(() => {
+          loadVisibleTracks(18).catch(() => {});
+        }, 900);
+      }
+    }
   },
 });
 globe.setOption('showLanes', false);
@@ -544,6 +575,7 @@ function syncFromMap() {
 function applyFiltersAndRender() {
   const q = state.searchQuery;
   const matched = state.allVessels.filter((v) => {
+    if (state.movingOnly && (v.sog || 0) < 0.5) return false;
     if (state.activeType !== 'all' && v.type !== state.activeType) return false;
     if (!q) return true;
     return (
@@ -571,7 +603,51 @@ function applyFiltersAndRender() {
   if (state.fleetModalOpen) renderFleetTable();
 }
 
-// Virtual scroll listeners (instant 60 FPS scrolling over 20,000+ rows)
+/**
+ * Batch-load REAL historical 24h AIS tracks for moving vessels currently inside the 3D viewport.
+ */
+async function loadVisibleTracks(maxCount = 24) {
+  if (state.loadingTracks) return;
+  const now = Date.now();
+  const visible = globe.getVisibleMovingVessels(maxCount * 2).filter((v) => {
+    const last = state.trackFetchedAt.get(v.mmsi) || 0;
+    return now - last > TRACK_CACHE_MS;
+  });
+  const targets = visible.slice(0, maxCount);
+  if (targets.length === 0) return;
+
+  state.loadingTracks = true;
+  if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = `항적 수신 중 (0/${targets.length})`;
+  let done = 0;
+  const q = state.openWatersToken
+    ? `?limit=60&key=${encodeURIComponent(state.openWatersToken)}`
+    : '?limit=60';
+
+  try {
+    await runPool(targets, 3, async (v) => {
+      state.trackFetchedAt.set(v.mmsi, Date.now());
+      const res = await fetch(`https://ais.openwaters.io/v1/vessels/${encodeURIComponent(v.mmsi)}/track${q}`);
+      if (res.ok) {
+        const geo = await res.json();
+        const pts = parseOpenWatersTrack(geo);
+        if (pts.length > 1) {
+          const cur = state.vesselsMap.get(v.mmsi);
+          if (cur) {
+            cur.trail = pts.slice(-80);
+            state.dirtyUi = true;
+          }
+        }
+      }
+      done++;
+      if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = `항적 수신 중 (${done}/${targets.length})`;
+    });
+  } finally {
+    state.loadingTracks = false;
+    if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = '화면 항적 로드';
+  }
+}
+
+// Virtual scroll listeners (instant 60 FPS scrolling over 35,000+ rows)
 dom.vesselList.addEventListener('scroll', () => renderVisibleList(), { passive: true });
 dom.fleetTableWrap.addEventListener('scroll', () => {
   if (state.fleetModalOpen) renderFleetTable();
@@ -606,7 +682,7 @@ async function selectVessel(mmsi, fly = false) {
   if (!v) return;
 
   globe.setSelectedVessel(mmsi, state.followSelected);
-  if (fly) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 3.2), 700);
+  if (fly) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 4.8), 700);
   state.loadingDetailsMmsi = mmsi;
   renderVisibleList();
   renderInspector();
@@ -628,6 +704,7 @@ async function selectVessel(mmsi, fly = false) {
       const trackGeo = await trackRes.value.json();
       const pts = parseOpenWatersTrack(trackGeo);
       if (pts.length > 0) updated = { ...updated, trail: pts.slice(-120) };
+      state.trackFetchedAt.set(mmsi, Date.now());
     }
     state.vesselsMap.set(updated.mmsi, updated);
   } catch {
@@ -676,7 +753,7 @@ dom.inspector.addEventListener('click', (e) => {
   }
   if (e.target.closest('#btn-center-vessel')) {
     const v = state.vesselsMap.get(state.selectedMmsi);
-    if (v) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 3.8), 600);
+    if (v) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 6.0), 600);
   }
 });
 
@@ -700,7 +777,7 @@ dom.fleetTableBody.addEventListener('click', (e) => {
   selectVessel(row.dataset.mmsi, true);
 });
 
-// Live Viewport Scan & Refresh
+// Live Viewport Scan, Visible Tracks & Refresh
 dom.btnScanView.addEventListener('click', async () => {
   const maxArea = state.openWatersToken ? 360 : 90;
   const bbox = buildBboxAround(globe.centerLat, globe.centerLon, maxArea);
@@ -712,6 +789,7 @@ dom.btnScanView.addEventListener('click', async () => {
       await fetchOpenWatersBbox(bbox);
       syncFromMap();
       connectOpenWatersWs(bbox);
+      await loadVisibleTracks(18);
     } catch (err) {
       state.lastError = err.message;
       updateStatusBadge();
@@ -723,6 +801,12 @@ dom.btnScanView.addEventListener('click', async () => {
   }
 });
 
+dom.btnLoadTracks.addEventListener('click', () => {
+  globe.setOption('showWakes', true);
+  dom.btnWakes.classList.add('active');
+  loadVisibleTracks(24).catch(() => {});
+});
+
 dom.btnRefreshLive.addEventListener('click', () => {
   if (state.provider === 'digitraffic') startDigitraffic();
   else if (state.provider === 'remote-sse' && state.backendUrl) startRemoteBackend(state.backendUrl);
@@ -731,22 +815,31 @@ dom.btnRefreshLive.addEventListener('click', () => {
 
 // Layer Toggles
 dom.btnToggleSidebar.addEventListener('click', () => dom.sidebar.classList.toggle('collapsed'));
-dom.btnZoomIn.addEventListener('click', () => globe.zoomBy(1.35));
-dom.btnZoomOut.addEventListener('click', () => globe.zoomBy(0.74));
+dom.btnZoomIn.addEventListener('click', () => globe.zoomBy(1.4));
+dom.btnZoomOut.addEventListener('click', () => globe.zoomBy(0.71));
 
 function bindToggle(btn, optKey) {
+  if (!btn) return;
   btn.addEventListener('click', () => {
     const next = !globe.options[optKey];
     globe.setOption(optKey, next);
     btn.classList.toggle('active', next);
   });
 }
+bindToggle(dom.btnClusters, 'showClusters');
+bindToggle(dom.btnBorders, 'showBorders');
 bindToggle(dom.btnAutoRotate, 'autoRotate');
 bindToggle(dom.btnDayNight, 'showDayNight');
-bindToggle(dom.btnLanes, 'showLanes');
 bindToggle(dom.btnWakes, 'showWakes');
 bindToggle(dom.btnPorts, 'showPorts');
 bindToggle(dom.btnLabels, 'showLabels');
+
+dom.btnMovingOnly.addEventListener('click', () => {
+  state.movingOnly = !state.movingOnly;
+  dom.btnMovingOnly.classList.toggle('active', state.movingOnly);
+  dom.vesselList.scrollTop = 0;
+  applyFiltersAndRender();
+});
 
 dom.btnTheme.addEventListener('click', () => {
   state.theme = state.theme === 'dark' ? 'light' : 'dark';

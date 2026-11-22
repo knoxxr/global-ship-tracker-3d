@@ -13,6 +13,7 @@ const FILES_TO_COPY = [
   ['src/live-zones.js', 'live-zones.js'],
   ['src/mvt-decoder.js', 'mvt-decoder.js'],
   ['src/ais-parser.js', 'ais-parser.js'],
+  ['src/public/world-geo.js', 'world-geo.js'],
   ['src/public/world-data.js', 'world-data.js'],
   ['src/public/globe-engine.js', 'globe-engine.js'],
   ['src/public/telemetry-ui.js', 'telemetry-ui.js'],

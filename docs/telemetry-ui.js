@@ -89,8 +89,30 @@ export function renderHoverTooltipHtml(v) {
       <div>${formatDms(v.lat, true)} / ${formatDms(v.lon, false)}</div>
       <div>${v.sog} kn (${kmh} km/h) · ${v.cog}° ${compass16(v.cog)}</div>
       <div>목적지: ${escapeHtml(v.destination || '미보고')} · 수신: ${formatAge(v.updatedAt)}</div>
-      <div>출처: ${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}</div>
+      <div>출처: ${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}${v.trail && v.trail.length > 1 ? ` · 항적 ${v.trail.length}점` : ''}</div>
     </div>
+  `;
+}
+
+export function renderClusterTooltipHtml(cluster) {
+  const breakdown = Object.entries(cluster.types || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([t, c]) => {
+      const m = VESSEL_TYPES[t] || VESSEL_TYPES.bulk;
+      return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px;"><span class="type-dot" style="background:${m.color}"></span>${m.short} ${c.toLocaleString()}</span>`;
+    })
+    .join('');
+
+  return `
+    <div style="font-weight:700;font-size:12px;">
+      선박 밀집 구역 · <span class="mono" style="color:var(--accent);">${cluster.count.toLocaleString()}척</span>
+    </div>
+    <div class="mono" style="color:var(--text-muted);font-size:11px;margin-top:2px;">
+      항해 중 ${cluster.movingCount.toLocaleString()}척 · 정박/계류 ${(cluster.count - cluster.movingCount).toLocaleString()}척
+    </div>
+    <div style="margin-top:5px;font-size:11px;line-height:1.5;">${breakdown}</div>
+    <div style="margin-top:4px;font-size:10.5px;color:var(--accent);">클릭하면 이 해역으로 확대됩니다</div>
   `;
 }
 
