@@ -111,12 +111,12 @@ export class GlobeEngine {
     this.onHoverCluster = options.onHoverCluster || (() => {});
     this.onCameraChange = options.onCameraChange || (() => {});
 
-    // Camera state (degrees) — zoom supports up to 18x with 50m coastlines!
+    // Camera state (degrees) — deep zoom up to 1500x (harbor & terminal level!)
     this.centerLat = options.initialLat ?? 28;
     this.centerLon = options.initialLon ?? 124;
     this.zoom = options.initialZoom ?? 1.4;
     this.minZoom = 0.85;
-    this.maxZoom = 18.0;
+    this.maxZoom = 1500.0;
 
     this.velLon = 0;
     this.velLat = 0;
@@ -148,7 +148,7 @@ export class GlobeEngine {
     this.screenVessels = [];
     this.screenClusters = [];
 
-    // Prepare Natural Earth 50m land, 110m borders, lakes & shipping corridors
+    // Prepare Natural Earth 50m land, 50m borders, 50m lakes & shipping corridors
     this.preparedPolygons = WORLD_POLYGONS.map((ring) => preparePath(ring, true, 4.5));
     this.preparedBorders = COUNTRY_BORDERS.map((line) => preparePath(line, false, 4.5));
     this.preparedLakes = WORLD_LAKES.map((ring) => preparePath(ring, true, 4.5));
@@ -226,6 +226,35 @@ export class GlobeEngine {
     return candidates.slice(0, maxCount).map((c) => c.v);
   }
 
+  /**
+   * Exact inverse orthographic projection: screen (sx, sy) -> { lat, lon } in degrees.
+   */
+  screenToLatLon(sx, sy) {
+    const x = (sx - this.cx) / this.radius;
+    const y = (this.cy - sy) / this.radius;
+    const r2 = x * x + y * y;
+    if (r2 >= 0.996) return null;
+    const z = Math.sqrt(Math.max(0, 1 - r2));
+    const phi0 = this.centerLat * DEG2RAD;
+    const lam0 = this.centerLon * DEG2RAD;
+    const sinPhi0 = Math.sin(phi0);
+    const cosPhi0 = Math.cos(phi0);
+    const phi = Math.asin(Math.max(-1, Math.min(1, z * sinPhi0 + y * cosPhi0)));
+    const lam = lam0 + Math.atan2(x, z * cosPhi0 - y * sinPhi0);
+    const lonDeg = (((lam * RAD2DEG + 180) % 360) + 360) % 360 - 180;
+    return { lat: phi * RAD2DEG, lon: lonDeg };
+  }
+
+  /**
+   * Returns approximate visible geographic half-span in degrees for viewport-aware scans/grids.
+   */
+  getViewportSpanDeg() {
+    const halfLat = Math.min(85, (this.height / (2 * Math.max(80, this.radius))) * RAD2DEG);
+    const cosLat = Math.max(0.18, Math.cos(this.centerLat * DEG2RAD));
+    const halfLon = Math.min(180, (this.width / (2 * Math.max(80, this.radius) * cosLat)) * RAD2DEG);
+    return { halfLat, halfLon };
+  }
+
   flyTo(lat, lon, zoom = this.zoom, durationMs = 750) {
     this.velLat = 0;
     this.velLon = 0;
@@ -246,11 +275,12 @@ export class GlobeEngine {
   }
 
   zoomBy(factor) {
+    const baseZoom = this.flyTarget ? this.flyTarget.targetZoom : this.zoom;
     const targetZoom = Math.max(
       this.minZoom,
-      Math.min(this.maxZoom, this.zoom * factor)
+      Math.min(this.maxZoom, baseZoom * factor)
     );
-    this.flyTo(this.centerLat, this.centerLon, targetZoom, 240);
+    this.flyTo(this.centerLat, this.centerLon, targetZoom, 220);
   }
 
   resize() {
@@ -317,9 +347,11 @@ export class GlobeEngine {
           this.dragMoved = true;
           this.followSelected = false;
         }
-        const degPerPx = 90 / Math.max(80, this.radius);
-        const dLon = -dx * degPerPx;
-        const dLat = dy * degPerPx;
+        // Exact 1:1 cursor-locked spherical panning at every zoom & latitude
+        const radPerPx = 1 / Math.max(80, this.radius);
+        const cosLat = Math.max(0.18, Math.cos(this.centerLat * DEG2RAD));
+        const dLat = dy * radPerPx * RAD2DEG;
+        const dLon = -(dx * radPerPx * RAD2DEG) / cosLat;
 
         this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
         this.centerLat = Math.max(-82, Math.min(82, this.centerLat + dLat));
@@ -367,8 +399,8 @@ export class GlobeEngine {
         const cluster = this._pickCluster(mx, my);
         if (cluster) {
           this.followSelected = false;
-          const nextZoom = Math.min(this.maxZoom, Math.max(this.zoom * 2.2, 3.2));
-          this.flyTo(cluster.lat, cluster.lon, nextZoom, 650);
+          const nextZoom = Math.min(this.maxZoom, Math.max(this.zoom * 2.5, 3.6));
+          this.flyTo(cluster.lat, cluster.lon, nextZoom, 620);
           return;
         }
 
@@ -390,14 +422,48 @@ export class GlobeEngine {
       }
     });
 
+    // Double-click anywhere on the map to smoothly zoom 2.6x into that spot
+    this.canvas.addEventListener('dblclick', (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      if (this._pickCluster(mx, my) || this._pickVessel(mx, my)) return;
+      const pos = this.screenToLatLon(mx, my);
+      if (pos) {
+        this.followSelected = false;
+        this.flyTo(pos.lat, pos.lon, Math.min(this.maxZoom, this.zoom * 2.6), 420);
+      }
+    });
+
+    // Smooth cursor-anchored wheel zoom (supports both mouse wheel and trackpad pinch/scroll)
     this.canvas.addEventListener(
       'wheel',
       (e) => {
         e.preventDefault();
         this.flyTarget = null;
-        const factor = e.deltaY < 0 ? 1.18 : 0.85;
+        this.velLat = 0;
+        this.velLon = 0;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const anchor = this.screenToLatLon(mx, my);
+
+        const clampedDelta = Math.max(-160, Math.min(160, e.deltaY));
+        const factor = Math.exp(-clampedDelta * 0.0028);
         this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom * factor));
         this.radius = this.baseRadius * this.zoom;
+
+        if (anchor && !this.followSelected) {
+          const after = this.screenToLatLon(mx, my);
+          if (after) {
+            let dLon = anchor.lon - after.lon;
+            if (dLon > 180) dLon -= 360;
+            if (dLon < -180) dLon += 360;
+            this.centerLat = Math.max(-82, Math.min(82, this.centerLat + (anchor.lat - after.lat)));
+            this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
+          }
+        }
       },
       { passive: false }
     );
@@ -450,7 +516,8 @@ export class GlobeEngine {
       this.centerLat = f.startLat + (f.targetLat - f.startLat) * ease;
       const lon = f.startLon + (f.targetLon - f.startLon) * ease;
       this.centerLon = (((lon + 180) % 360) + 360) % 360 - 180;
-      this.zoom = f.startZoom + (f.targetZoom - f.startZoom) * ease;
+      // Exponential zoom interpolation feels perceptually smooth from 1x to 1500x!
+      this.zoom = f.startZoom * Math.pow(f.targetZoom / Math.max(0.1, f.startZoom), ease);
       if (t >= 1) this.flyTarget = null;
     } else if (this.followSelected && this.selectedMmsi) {
       const target = this.vessels.find((v) => v.mmsi === this.selectedMmsi);
@@ -462,15 +529,17 @@ export class GlobeEngine {
         this.centerLat += (target.lat - this.centerLat) * 0.08;
       }
     } else if (!this.isDragging) {
-      if (Math.abs(this.velLon) > 0.005 || Math.abs(this.velLat) > 0.005) {
+      const velEps = 0.004 / Math.max(1, this.zoom);
+      if (Math.abs(this.velLon) > velEps || Math.abs(this.velLat) > velEps) {
         this.centerLon =
           (((this.centerLon + this.velLon + 180) % 360) + 360) % 360 - 180;
         this.centerLat = Math.max(-82, Math.min(82, this.centerLat + this.velLat));
-        this.velLon *= 0.9;
-        this.velLat *= 0.9;
+        this.velLon *= 0.88;
+        this.velLat *= 0.88;
       } else if (this.options.autoRotate) {
+        const rotSpeed = 5.0 / Math.max(1, Math.sqrt(this.zoom));
         this.centerLon =
-          (((this.centerLon + dt * 5.0 + 180) % 360) + 360) % 360 - 180;
+          (((this.centerLon + dt * rotSpeed + 180) % 360) + 360) % 360 - 180;
       }
     }
 
@@ -571,33 +640,44 @@ export class GlobeEngine {
       ctx.fill();
     }
 
-    // 3. Clip to Earth disk
+    // 3. Clip to Earth disk (skip gigantic arc clip when globe completely fills viewport)
+    const fillsViewport = R > Math.hypot(cx, cy) + 8;
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.clip();
+    if (!fillsViewport) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.clip();
+    }
 
-    // 4. Spherical ocean shading
-    const oceanGrad = ctx.createRadialGradient(
-      cx - R * 0.25,
-      cy - R * 0.22,
-      R * 0.08,
-      cx,
-      cy,
-      R * 1.02
-    );
-    oceanGrad.addColorStop(0, P.oceanInner);
-    oceanGrad.addColorStop(0.62, P.oceanMid);
-    oceanGrad.addColorStop(1, P.oceanEdge);
-    ctx.fillStyle = oceanGrad;
-    ctx.fillRect(0, 0, this.width, this.height);
+    // 4. Spherical ocean shading (crisp viewport fill at deep zoom avoids giant radial gradient artifacts)
+    if (fillsViewport) {
+      const flatOcean = ctx.createLinearGradient(0, 0, 0, this.height);
+      flatOcean.addColorStop(0, P.oceanInner);
+      flatOcean.addColorStop(1, P.oceanMid);
+      ctx.fillStyle = flatOcean;
+      ctx.fillRect(0, 0, this.width, this.height);
+    } else {
+      const oceanGrad = ctx.createRadialGradient(
+        cx - R * 0.25,
+        cy - R * 0.22,
+        R * 0.08,
+        cx,
+        cy,
+        R * 1.02
+      );
+      oceanGrad.addColorStop(0, P.oceanInner);
+      oceanGrad.addColorStop(0.62, P.oceanMid);
+      oceanGrad.addColorStop(1, P.oceanEdge);
+      ctx.fillStyle = oceanGrad;
+      ctx.fillRect(0, 0, this.width, this.height);
+    }
 
     const phi0 = this.centerLat * DEG2RAD;
     const lam0 = this.centerLon * DEG2RAD;
     const sinPhi0 = Math.sin(phi0);
     const cosPhi0 = Math.cos(phi0);
 
-    // 5. Adaptive Graticule
+    // 5. Viewport-culled Adaptive Graticule (20° down to 0.02°)
     if (this.options.showGraticule) {
       this._drawGraticule(ctx, P, sinPhi0, cosPhi0, lam0);
     }
@@ -609,7 +689,7 @@ export class GlobeEngine {
     const sun = getSubsolarRad();
     const sunVec = latLonToVec3(sun.phi * RAD2DEG, sun.lam * RAD2DEG);
     if (this.options.showDayNight) {
-      this._drawDayNightOverlay(ctx, P, sinPhi0, cosPhi0, lam0, sun);
+      this._drawDayNightOverlay(ctx, P, sinPhi0, cosPhi0, lam0, sun, sunVec);
     }
 
     // 8. Nautical Sea & Strait Labels
@@ -631,7 +711,7 @@ export class GlobeEngine {
     ctx.restore(); // End sphere clip
 
     // 12. Sphere rim outline
-    if (this.zoom < 4.5) {
+    if (!fillsViewport) {
       ctx.strokeStyle = P.rimStroke;
       ctx.lineWidth = 1.25;
       ctx.beginPath();
@@ -639,20 +719,98 @@ export class GlobeEngine {
       ctx.stroke();
     }
 
+    // 13. Live Nautical Scale Bar (km / m + NM)
+    this._drawScaleBar(ctx, P);
+
+    ctx.restore();
+  }
+
+  _drawScaleBar(ctx, P) {
+    const EARTH_RADIUS_M = 6371000;
+    const metersPerPx = EARTH_RADIUS_M / Math.max(80, this.radius);
+    const targetPx = 110;
+    const rawMeters = metersPerPx * targetPx;
+
+    // Snap to clean 1 / 2 / 5 × 10^n nautical-friendly distance
+    const pow10 = Math.pow(10, Math.floor(Math.log10(Math.max(10, rawMeters))));
+    const norm = rawMeters / pow10;
+    const niceMult = norm >= 5 ? 5 : norm >= 2 ? 2 : 1;
+    const distM = niceMult * pow10;
+    const barPx = Math.max(36, Math.min(180, distM / metersPerPx));
+
+    const kmText = distM >= 1000 ? `${(distM / 1000).toLocaleString()} km` : `${Math.round(distM)} m`;
+    const nmVal = distM / 1852;
+    const nmText = nmVal >= 10 ? `${Math.round(nmVal).toLocaleString()} NM` : `${nmVal.toFixed(1)} NM`;
+    const label = `${kmText} · ${nmText}`;
+
+    const x = this.width - barPx - 20;
+    const y = this.height - 54;
+
+    ctx.save();
+    ctx.font = '600 10px ui-monospace, SFMono-Regular, monospace';
+    const textW = ctx.measureText(label).width;
+    const boxW = Math.max(barPx, textW) + 14;
+    const boxX = this.width - boxW - 14;
+    const boxY = y - 19;
+
+    ctx.fillStyle = P.portLabelBg;
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxW, 26, 5);
+    ctx.fill();
+
+    ctx.fillStyle = P.portLabel;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(label, this.width - 21, y - 4);
+
+    ctx.strokeStyle = P.portDot;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 3);
+    ctx.lineTo(x, y + 1);
+    ctx.lineTo(x + barPx, y + 1);
+    ctx.lineTo(x + barPx, y - 3);
+    ctx.stroke();
     ctx.restore();
   }
 
   _drawGraticule(ctx, P, sinPhi0, cosPhi0, lam0) {
-    const step = this.zoom > 8 ? 2 : this.zoom > 4 ? 5 : this.zoom > 2.2 ? 10 : 20;
-    const sampleStep = this.zoom > 4 ? 2 : 4;
+    const z = this.zoom;
+    const step =
+      z >= 900 ? 0.02
+      : z >= 400 ? 0.05
+      : z >= 180 ? 0.1
+      : z >= 80 ? 0.2
+      : z >= 35 ? 0.5
+      : z >= 16 ? 1
+      : z >= 7.5 ? 2
+      : z >= 3.8 ? 5
+      : z >= 2.0 ? 10
+      : 20;
+
+    const { halfLat, halfLon } = this.getViewportSpanDeg();
+    const padLat = Math.min(85, halfLat * 1.35 + step);
+    const padLon = Math.min(180, halfLon * 1.35 + step);
+
+    const minLat = Math.max(-80, Math.floor((this.centerLat - padLat) / step) * step);
+    const maxLat = Math.min(80, Math.ceil((this.centerLat + padLat) / step) * step);
+
+    // Handle full globe vs local zoomed window for longitude
+    const fullLon = padLon >= 165;
+    const minLon = fullLon ? -180 : Math.floor((this.centerLon - padLon) / step) * step;
+    const maxLon = fullLon ? 180 : Math.ceil((this.centerLon + padLon) / step) * step;
+    const sampleStep = Math.max(step * 0.25, Math.min(4, padLon / 28));
+
     ctx.lineWidth = 0.65;
 
-    for (let lat = -80; lat <= 80; lat += step) {
-      ctx.strokeStyle = lat === 0 ? P.equator : P.graticule;
+    for (let lat = minLat; lat <= maxLat + step * 0.1; lat += step) {
+      const rLat = Math.round(lat * 1000) / 1000;
+      if (rLat < -80 || rLat > 80) continue;
+      ctx.strokeStyle = rLat === 0 ? P.equator : P.graticule;
       ctx.beginPath();
       let started = false;
-      const phi = lat * DEG2RAD;
-      for (let lon = -180; lon <= 180; lon += sampleStep) {
+      const phi = rLat * DEG2RAD;
+      for (let lon = minLon; lon <= maxLon + sampleStep * 0.1; lon += sampleStep) {
         const p = this.projectRad(phi, lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
         if (p.z > 0) {
           if (!started) { ctx.moveTo(p.sx, p.sy); started = true; }
@@ -664,13 +822,16 @@ export class GlobeEngine {
       ctx.stroke();
     }
 
-    for (let lon = -180; lon < 180; lon += step) {
-      ctx.strokeStyle = lon === 0 ? P.equator : P.graticule;
+    for (let lon = minLon; lon <= maxLon - (fullLon ? step * 0.1 : -step * 0.1); lon += step) {
+      const rLon = Math.round(lon * 1000) / 1000;
+      const wrappedLon = (((rLon + 180) % 360) + 360) % 360 - 180;
+      ctx.strokeStyle = Math.abs(wrappedLon) < 1e-4 ? P.equator : P.graticule;
       ctx.beginPath();
       let started = false;
-      const lam = lon * DEG2RAD;
-      for (let lat = -84; lat <= 84; lat += sampleStep) {
-        const p = this.projectRad(lat * DEG2RAD, lam, sinPhi0, cosPhi0, lam0);
+      const lam = rLon * DEG2RAD;
+      for (let lat = minLat; lat <= maxLat + sampleStep * 0.1; lat += sampleStep) {
+        const clampedLat = Math.max(-84, Math.min(84, lat));
+        const p = this.projectRad(clampedLat * DEG2RAD, lam, sinPhi0, cosPhi0, lam0);
         if (p.z > 0) {
           if (!started) { ctx.moveTo(p.sx, p.sy); started = true; }
           else ctx.lineTo(p.sx, p.sy);
@@ -720,7 +881,7 @@ export class GlobeEngine {
     // Coastal shallow-shelf outer halo
     if (this.zoom >= 1.4) {
       ctx.strokeStyle = P.shelfGlow;
-      ctx.lineWidth = Math.min(7, 2.5 + this.zoom * 0.5);
+      ctx.lineWidth = Math.min(9, 2.5 + Math.log2(Math.max(1, this.zoom)) * 1.1);
       for (let k = 0; k < visiblePolys.length; k++) {
         this._tracePolygon(ctx, visiblePolys[k], cx, cy, R);
         ctx.stroke();
@@ -730,7 +891,7 @@ export class GlobeEngine {
     // Fill land + crisp coastline outline
     ctx.fillStyle = P.landFill;
     ctx.strokeStyle = P.landStroke;
-    ctx.lineWidth = Math.max(0.75, Math.min(1.6, 0.75 + this.zoom * 0.12));
+    ctx.lineWidth = Math.max(0.75, Math.min(2.0, 0.75 + Math.log2(Math.max(1, this.zoom)) * 0.22));
     for (let k = 0; k < visiblePolys.length; k++) {
       this._tracePolygon(ctx, visiblePolys[k], cx, cy, R);
       ctx.fill();
@@ -740,7 +901,7 @@ export class GlobeEngine {
     // 2. Major inland lakes
     ctx.fillStyle = P.lakeFill;
     ctx.strokeStyle = P.landStroke;
-    ctx.lineWidth = 0.6;
+    ctx.lineWidth = 0.65;
     for (let k = 0; k < this.preparedLakes.length; k++) {
       const item = this.preparedLakes[k];
       if (!this._isItemPotentiallyVisible(item, sinPhi0, cosPhi0, lam0)) continue;
@@ -762,8 +923,8 @@ export class GlobeEngine {
     if (this.options.showBorders) {
       ctx.save();
       ctx.strokeStyle = P.borderStroke;
-      ctx.lineWidth = 0.7;
-      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 0.75;
+      ctx.setLineDash([4, 3]);
       for (let k = 0; k < this.preparedBorders.length; k++) {
         const item = this.preparedBorders[k];
         if (!this._isItemPotentiallyVisible(item, sinPhi0, cosPhi0, lam0)) continue;
@@ -802,7 +963,21 @@ export class GlobeEngine {
     ctx.closePath();
   }
 
-  _drawDayNightOverlay(ctx, P, sinPhi0, cosPhi0, lam0, sun) {
+  _drawDayNightOverlay(ctx, P, sinPhi0, cosPhi0, lam0, sun, sunVec) {
+    // At deep zoom, evaluate real solar elevation smoothly at the viewport center
+    if (this.zoom >= 5) {
+      const cv = latLonToVec3(this.centerLat, this.centerLon);
+      const sunDot = cv[0] * sunVec[0] + cv[1] * sunVec[1] + cv[2] * sunVec[2];
+      if (sunDot >= 0.08) return;
+      const nightFactor = Math.max(0, Math.min(1, (0.08 - sunDot) / 0.24));
+      ctx.save();
+      ctx.fillStyle = P.nightTint;
+      ctx.globalAlpha = nightFactor * 0.72;
+      ctx.fillRect(0, 0, this.width, this.height);
+      ctx.restore();
+      return;
+    }
+
     const sunProj = this.projectRad(sun.phi, sun.lam, sinPhi0, cosPhi0, lam0);
     const nightX = this.cx - sunProj.x * this.radius * 0.92;
     const nightY = this.cy + sunProj.y * this.radius * 0.92;
@@ -901,7 +1076,7 @@ export class GlobeEngine {
     const totalCount = this.vessels.length;
     const wPad = this.width + 24;
     const hPad = this.height + 24;
-    const baseSize = Math.max(3.4, Math.min(7.8, 3.4 + Math.min(6, this.zoom) * 0.72));
+    const baseSize = Math.max(3.4, Math.min(9.5, 3.4 + Math.log2(Math.max(1, this.zoom)) * 0.95));
 
     // Smart clustering activates automatically when zoomed out and vessels are dense
     const useClusters = this.options.showClusters && this.zoom < 4.5 && totalCount > 120;
@@ -1029,8 +1204,10 @@ export class GlobeEngine {
         ctx.restore();
       }
     } else {
-      // Unclustered / Zoomed-in High-Detail View (with smart anti-overlap for moored harbor dots)
+      // Unclustered / Zoomed-in High-Detail View (relaxes moored deduplication smoothly down to berth level)
       const showAllLabels = this.options.showLabels || this.zoom >= 5.5;
+      const maxLabels = this.zoom >= 20 ? 140 : 65;
+      const mooredCellPx = this.zoom < 6 ? 6 : this.zoom < 12 ? 3 : 0;
       const placedLabels = [];
       const mooredOccupancy = new Set();
 
@@ -1052,9 +1229,9 @@ export class GlobeEngine {
         const isMoving = (v.sog || 0) >= 0.5;
         const hasRealTrack = v.trail && v.trail.length > 1;
 
-        // Deduplicate tightly stacked moored/stationary ships within 6px unless zoomed very deep
-        if (!isMoving && !hasRealTrack && this.zoom < 10) {
-          const cellKey = `${Math.floor(p.sx / 6)}:${Math.floor(p.sy / 6)}`;
+        // Deduplicate tightly stacked moored/stationary ships until zoomed into harbor detail (>= 12x)
+        if (!isMoving && !hasRealTrack && mooredCellPx > 0) {
+          const cellKey = `${Math.floor(p.sx / mooredCellPx)}:${Math.floor(p.sy / mooredCellPx)}`;
           if (mooredOccupancy.has(cellKey)) continue;
           mooredOccupancy.add(cellKey);
         }
@@ -1065,7 +1242,7 @@ export class GlobeEngine {
 
         // 1. Real recorded AIS track (gradient wake!)
         if (this.options.showWakes && hasRealTrack) {
-          this._drawGradientTrack(ctx, v.trail, meta.color, 0.72, 1.7, sinPhi0, cosPhi0, lam0);
+          this._drawGradientTrack(ctx, v.trail, meta.color, 0.75, 1.85, sinPhi0, cosPhi0, lam0, this.zoom >= 25);
         } else if (this.options.showWakes && (v.sog || 0) >= 1.5) {
           // 2. Crisp kinematic stern wake for moving vessels before historical track arrives
           this._drawSternWake(ctx, p.sx, p.sy, angle, v.sog, meta.color, 0.45);
@@ -1073,11 +1250,11 @@ export class GlobeEngine {
 
         // Forward ECDIS speed vector tick for moving vessels
         if (this.zoom >= 3.0 && (v.sog || 0) >= 1.5) {
-          const tickLen = Math.min(20, baseSize + v.sog * 0.5);
+          const tickLen = Math.min(26, baseSize + v.sog * 0.6);
           ctx.save();
           ctx.strokeStyle = meta.color;
-          ctx.globalAlpha = 0.55;
-          ctx.lineWidth = 1;
+          ctx.globalAlpha = 0.58;
+          ctx.lineWidth = 1.1;
           ctx.beginPath();
           ctx.moveTo(p.sx, p.sy);
           ctx.lineTo(p.sx + Math.cos(angle) * tickLen, p.sy + Math.sin(angle) * tickLen);
@@ -1097,7 +1274,7 @@ export class GlobeEngine {
           ctx.globalAlpha = 1;
         }
 
-        if (showAllLabels && p.z > 0.2 && placedLabels.length < 65 && (isMoving || this.zoom >= 8)) {
+        if (showAllLabels && p.z > 0.2 && placedLabels.length < maxLabels && (isMoving || this.zoom >= 8)) {
           const label = `${v.name}${isMoving ? ` · ${v.sog}kn` : ''}`;
           ctx.font = '500 10px system-ui, -apple-system, sans-serif';
           const tw = ctx.measureText(label).width + 8;
@@ -1127,7 +1304,7 @@ export class GlobeEngine {
         this._drawSternWake(ctx, item.sx, item.sy, item.angle, v.sog, meta.color, 0.75);
       }
 
-      const vecLen = Math.min(32, baseSize * 1.6 + (v.sog || 0) * 0.75);
+      const vecLen = Math.min(34, baseSize * 1.6 + (v.sog || 0) * 0.75);
       ctx.save();
       ctx.strokeStyle = meta.color;
       ctx.lineWidth = 1.5;
@@ -1173,7 +1350,7 @@ export class GlobeEngine {
   _screenAngle(v, p, sinPhi0, cosPhi0, lam0) {
     const cogRad = (v.cog || 0) * DEG2RAD;
     const phi = v.lat * DEG2RAD;
-    const stepDeg = 0.4;
+    const stepDeg = Math.max(0.002, 0.4 / Math.max(1, this.zoom * 0.25));
     const lat2 = Math.max(-89, Math.min(89, v.lat + Math.cos(cogRad) * stepDeg));
     const lon2 = v.lon + (Math.sin(cogRad) * stepDeg) / Math.max(0.2, Math.cos(phi));
     const p2 = this.projectRad(lat2 * DEG2RAD, lon2 * DEG2RAD, sinPhi0, cosPhi0, lam0);
@@ -1191,6 +1368,7 @@ export class GlobeEngine {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = color;
+    const nodeStride = this.zoom >= 40 ? 2 : 6;
 
     let prev = null;
     for (let i = 0; i < n; i++) {
@@ -1208,7 +1386,7 @@ export class GlobeEngine {
         ctx.lineTo(p.sx, p.sy);
         ctx.stroke();
 
-        if (showNodes && (i === 1 || i % 6 === 0)) {
+        if (showNodes && (i === 1 || i % nodeStride === 0)) {
           ctx.fillStyle = color;
           ctx.globalAlpha = maxAlpha * (0.35 + 0.65 * frac);
           ctx.beginPath();

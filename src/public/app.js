@@ -135,9 +135,10 @@ const globe = new GlobeEngine(dom.canvas, {
     dom.hoverTooltip.classList.remove('hidden');
   },
   onCameraChange: ({ lat, lon, zoom }) => {
-    dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom.toFixed(1)}x`;
+    dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom >= 100 ? Math.round(zoom) : zoom.toFixed(1)}x`;
     if (zoom >= 2.8 && globe.options.showWakes) {
-      const key = `${Math.round(lat / 2)}:${Math.round(lon / 2)}:${Math.round(zoom)}`;
+      const g = 2 / Math.max(1, zoom / 3);
+      const key = `${Math.round(lat / g)}:${Math.round(lon / g)}:${Math.round(Math.log2(zoom) * 2)}`;
       if (key !== lastAutoTrackKey) {
         lastAutoTrackKey = key;
         clearTimeout(autoTrackTimer);
