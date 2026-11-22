@@ -7,7 +7,7 @@
  * Uses virtualized list/table rendering so 20,000+ live vessels run smoothly at 60 FPS.
  */
 
-import { GlobeEngine } from './globe-engine.js?v=6';
+import { GlobeEngine } from './globe-engine.js?v=7';
 import { VESSEL_TYPES } from './world-data.js';
 import { LIVE_ZONES, buildBboxAround } from './live-zones.js';
 import { decodeMvtPoints } from './mvt-decoder.js';
@@ -28,7 +28,7 @@ import {
   renderInspectorBodyHtml,
   renderVirtualFleetTable,
   exportVesselsCsv,
-} from './telemetry-ui.js';
+} from './telemetry-ui.js?v=2';
 
 const MAX_VESSELS = 60000;
 const TRACK_CACHE_MS = 10 * 60 * 1000;
@@ -87,6 +87,8 @@ const dom = {
   presetBar: document.getElementById('preset-bar'),
   sidebar: document.getElementById('sidebar'),
   btnToggleSidebar: document.getElementById('btn-toggle-sidebar'),
+  btnCloseSidebar: document.getElementById('btn-close-sidebar'),
+  mobileBackdrop: document.getElementById('mobile-backdrop'),
   searchInput: document.getElementById('search-input'),
   filterGrid: document.getElementById('filter-grid'),
   fleetSummary: document.getElementById('fleet-summary'),
@@ -138,7 +140,7 @@ let lastAutoTrackKey = '';
 const globe = new GlobeEngine(dom.canvas, {
   initialLat: 28,
   initialLon: 124,
-  initialZoom: 1.4,
+  initialZoom: window.innerWidth <= 768 ? 1.02 : 1.4,
   theme: state.theme,
   onSelectVessel: (vessel) => selectVessel(vessel.mmsi, true),
   onHoverVessel: (vessel, mx, my) => {
@@ -505,6 +507,10 @@ function renderPresets() {
     state.activeZoneId = zone.id;
     state.activeBbox = zone.bbox;
     state.followSelected = false;
+    dom.presetBar.querySelectorAll('[data-zone]').forEach((b) => {
+      b.classList.toggle('active', b === btn);
+    });
+    btn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
     globe.setSelectedVessel(state.selectedMmsi, false);
     globe.flyTo(zone.center.lat, zone.center.lon, zone.center.zoom, 800);
 
@@ -594,7 +600,8 @@ function applyFiltersAndRender() {
   globe.setVessels(state.filteredVessels);
 
   updateStatusBadge();
-  dom.btnFleetTable.textContent = `전체 선박 표 (${state.filteredVessels.length.toLocaleString()})`;
+  const countStr = state.filteredVessels.length.toLocaleString();
+  dom.btnFleetTable.innerHTML = `<span class="label-desktop">전체 선박 표 (${countStr})</span><span class="label-mobile">선박표</span>`;
   dom.fleetSummary.innerHTML = renderFleetSummaryHtml(state.filteredVessels);
   dom.filteredCount.textContent = `실시간 수신: ${state.filteredVessels.length.toLocaleString()}척`;
 
@@ -672,9 +679,32 @@ dom.sortSelect.addEventListener('change', (e) => {
   dom.vesselList.scrollTop = 0;
   applyFiltersAndRender();
 });
+const isMobileViewport = () => window.matchMedia('(max-width: 768px)').matches;
+
+function setSidebarOpen(open) {
+  dom.sidebar.classList.toggle('collapsed', !open);
+  dom.btnToggleSidebar.setAttribute('aria-expanded', String(open));
+  if (dom.mobileBackdrop) {
+    dom.mobileBackdrop.classList.toggle('hidden', !(open && isMobileViewport()));
+  }
+}
+
+function closeInspector() {
+  state.selectedMmsi = null;
+  state.followSelected = false;
+  globe.setSelectedVessel(null, false);
+  dom.inspector.classList.add('hidden');
+  dom.inspector.classList.remove('expanded');
+  document.body.classList.remove('inspector-open');
+  renderVisibleList();
+}
+
 dom.vesselList.addEventListener('click', (e) => {
   const item = e.target.closest('[data-mmsi]');
-  if (item) selectVessel(item.dataset.mmsi, true);
+  if (item) {
+    if (isMobileViewport()) setSidebarOpen(false);
+    selectVessel(item.dataset.mmsi, true);
+  }
 });
 
 async function selectVessel(mmsi, fly = false) {
@@ -682,6 +712,10 @@ async function selectVessel(mmsi, fly = false) {
   const v = state.vesselsMap.get(mmsi);
   if (!v) return;
 
+  if (isMobileViewport()) {
+    setSidebarOpen(false);
+    dom.inspector.classList.remove('expanded');
+  }
   globe.setSelectedVessel(mmsi, state.followSelected);
   if (fly) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 4.8), 700);
   state.loadingDetailsMmsi = mmsi;
@@ -719,15 +753,18 @@ async function selectVessel(mmsi, fly = false) {
 function renderInspector() {
   if (!state.selectedMmsi) {
     dom.inspector.classList.add('hidden');
+    document.body.classList.remove('inspector-open');
     return;
   }
   const v = state.vesselsMap.get(state.selectedMmsi);
   if (!v) {
     dom.inspector.classList.add('hidden');
+    document.body.classList.remove('inspector-open');
     return;
   }
   const prevScroll = dom.inspector.scrollTop;
   dom.inspector.classList.remove('hidden');
+  document.body.classList.add('inspector-open');
   dom.inspector.innerHTML = renderInspectorBodyHtml(
     v,
     state.followSelected,
@@ -737,12 +774,12 @@ function renderInspector() {
 }
 
 dom.inspector.addEventListener('click', (e) => {
+  if (e.target.closest('#inspector-handle')) {
+    dom.inspector.classList.toggle('expanded');
+    return;
+  }
   if (e.target.closest('#btn-close-inspector')) {
-    state.selectedMmsi = null;
-    state.followSelected = false;
-    globe.setSelectedVessel(null, false);
-    dom.inspector.classList.add('hidden');
-    renderVisibleList();
+    closeInspector();
     return;
   }
   if (e.target.closest('#btn-follow-vessel')) {
@@ -754,12 +791,49 @@ dom.inspector.addEventListener('click', (e) => {
   }
   if (e.target.closest('#btn-center-vessel')) {
     const v = state.vesselsMap.get(state.selectedMmsi);
-    if (v) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 6.0), 600);
+    if (v) {
+      if (isMobileViewport()) dom.inspector.classList.remove('expanded');
+      globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 6.0), 600);
+    }
   }
 });
 
+// Touch swipe gestures on mobile bottom-sheet handle (up: expand, down: collapse/dismiss)
+let sheetTouchStartY = null;
+dom.inspector.addEventListener(
+  'touchstart',
+  (e) => {
+    if (!isMobileViewport() || e.touches.length !== 1) return;
+    if (e.target.closest('#inspector-handle') || dom.inspector.scrollTop <= 0) {
+      sheetTouchStartY = e.touches[0].clientY;
+    } else {
+      sheetTouchStartY = null;
+    }
+  },
+  { passive: true }
+);
+dom.inspector.addEventListener(
+  'touchend',
+  (e) => {
+    if (sheetTouchStartY === null || !e.changedTouches.length) return;
+    const dy = e.changedTouches[0].clientY - sheetTouchStartY;
+    sheetTouchStartY = null;
+    if (dy < -42) {
+      dom.inspector.classList.add('expanded');
+    } else if (dy > 52) {
+      if (dom.inspector.classList.contains('expanded')) {
+        dom.inspector.classList.remove('expanded');
+      } else {
+        closeInspector();
+      }
+    }
+  },
+  { passive: true }
+);
+
 // Fleet Table Modal
 dom.btnFleetTable.addEventListener('click', () => {
+  if (isMobileViewport()) setSidebarOpen(false);
   state.fleetModalOpen = true;
   dom.fleetModal.classList.remove('hidden');
   dom.fleetTableWrap.scrollTop = 0;
@@ -768,6 +842,12 @@ dom.btnFleetTable.addEventListener('click', () => {
 dom.btnCloseFleetModal.addEventListener('click', () => {
   state.fleetModalOpen = false;
   dom.fleetModal.classList.add('hidden');
+});
+dom.fleetModal.addEventListener('click', (e) => {
+  if (e.target === dom.fleetModal) {
+    state.fleetModalOpen = false;
+    dom.fleetModal.classList.add('hidden');
+  }
 });
 dom.btnExportCsv.addEventListener('click', () => exportVesselsCsv(state.filteredVessels));
 dom.fleetTableBody.addEventListener('click', (e) => {
@@ -814,8 +894,22 @@ dom.btnRefreshLive.addEventListener('click', () => {
   else startOpenWaters();
 });
 
-// Layer Toggles
-dom.btnToggleSidebar.addEventListener('click', () => dom.sidebar.classList.toggle('collapsed'));
+// Layer Toggles & Mobile Drawer
+dom.btnToggleSidebar.addEventListener('click', () => {
+  setSidebarOpen(dom.sidebar.classList.contains('collapsed'));
+});
+if (dom.btnCloseSidebar) {
+  dom.btnCloseSidebar.addEventListener('click', () => setSidebarOpen(false));
+}
+if (dom.mobileBackdrop) {
+  dom.mobileBackdrop.addEventListener('click', () => setSidebarOpen(false));
+}
+window.addEventListener('resize', () => {
+  if (!isMobileViewport() && dom.mobileBackdrop) {
+    dom.mobileBackdrop.classList.add('hidden');
+  }
+});
+
 dom.btnZoomIn.addEventListener('click', () => globe.zoomBy(1.4));
 dom.btnZoomOut.addEventListener('click', () => globe.zoomBy(0.71));
 
@@ -851,6 +945,7 @@ dom.btnTheme.addEventListener('click', () => {
 
 // Feed Settings Modal
 dom.btnApiConfig.addEventListener('click', () => {
+  if (isMobileViewport()) setSidebarOpen(false);
   dom.modalError.style.display = 'none';
   dom.providerSelect.value = state.provider;
   dom.openWatersTokenInput.value = state.openWatersToken;
@@ -858,6 +953,9 @@ dom.btnApiConfig.addEventListener('click', () => {
   dom.apiModal.classList.remove('hidden');
 });
 dom.btnCancelModal.addEventListener('click', () => dom.apiModal.classList.add('hidden'));
+dom.apiModal.addEventListener('click', (e) => {
+  if (e.target === dom.apiModal) dom.apiModal.classList.add('hidden');
+});
 dom.btnSaveApi.addEventListener('click', () => {
   const nextProvider = dom.providerSelect.value;
   state.openWatersToken = dom.openWatersTokenInput.value.trim();
@@ -892,6 +990,11 @@ setInterval(() => {
     updateStatusBadge();
   }
 }, 2000);
+
+// On mobile, start with the sidebar drawer closed so the 3D globe is immediately visible
+if (isMobileViewport()) {
+  setSidebarOpen(false);
+}
 
 renderPresets();
 startOpenWaters();

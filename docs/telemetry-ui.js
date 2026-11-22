@@ -237,6 +237,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
     .join('');
 
   return `
+    <div class="sheet-handle" id="inspector-handle" role="button" tabindex="0" aria-label="상세 패널 크기 전환"><span></span></div>
     <div class="inspector-head">
       <div style="min-width:0;">
         <h2 class="inspector-title">${escapeHtml(v.name)}</h2>

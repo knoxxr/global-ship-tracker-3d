@@ -122,8 +122,14 @@ export class GlobeEngine {
     this.velLat = 0;
     this.flyTarget = null;
     this.isDragging = false;
+    this.isPinching = false;
     this.dragMoved = false;
     this.lastPointer = { x: 0, y: 0 };
+    this.pointerDownPos = { x: 0, y: 0 };
+    this._pointers = new Map();
+    this._pinchDist = 0;
+    this._pinchMid = { x: 0, y: 0 };
+    this._lastTouchTap = { time: 0, x: 0, y: 0 };
 
     // Layer toggles
     this.options = {
@@ -324,15 +330,38 @@ export class GlobeEngine {
     window.addEventListener('resize', this._onResize);
 
     this.canvas.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      this.canvas.setPointerCapture(e.pointerId);
-      this.isDragging = true;
-      this.dragMoved = false;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      try {
+        this.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        // ignore if pointer cannot be captured
+      }
+
+      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
       this.flyTarget = null;
       this.velLat = 0;
       this.velLon = 0;
-      this.lastPointer = { x: e.clientX, y: e.clientY };
-      this.canvas.style.cursor = 'grabbing';
+
+      if (this._pointers.size === 1) {
+        this.isDragging = true;
+        this.isPinching = false;
+        this.dragMoved = false;
+        this.pointerDownPos = { x: e.clientX, y: e.clientY };
+        this.lastPointer = { x: e.clientX, y: e.clientY };
+        this.canvas.style.cursor = 'grabbing';
+      } else if (this._pointers.size === 2) {
+        const [p1, p2] = Array.from(this._pointers.values());
+        const rect = this.canvas.getBoundingClientRect();
+        this.isPinching = true;
+        this.isDragging = false;
+        this.dragMoved = true;
+        this.followSelected = false;
+        this._pinchDist = Math.max(10, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+        this._pinchMid = {
+          x: (p1.x + p2.x) * 0.5 - rect.left,
+          y: (p1.y + p2.y) * 0.5 - rect.top,
+        };
+      }
     });
 
     this.canvas.addEventListener('pointermove', (e) => {
@@ -340,29 +369,72 @@ export class GlobeEngine {
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
+      if (this._pointers.has(e.pointerId)) {
+        this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+      }
+
+      // Two-finger pinch-to-zoom + anchored midpoint pan
+      if (this.isPinching && this._pointers.size >= 2) {
+        const [p1, p2] = Array.from(this._pointers.values());
+        const dist = Math.max(10, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+        const mid = {
+          x: (p1.x + p2.x) * 0.5 - rect.left,
+          y: (p1.y + p2.y) * 0.5 - rect.top,
+        };
+
+        const anchor = this.screenToLatLon(this._pinchMid.x, this._pinchMid.y);
+        const scale = dist / Math.max(10, this._pinchDist);
+        this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom * scale));
+        this.radius = this.baseRadius * this.zoom;
+
+        if (anchor) {
+          const after = this.screenToLatLon(mid.x, mid.y);
+          if (after) {
+            let dLon = anchor.lon - after.lon;
+            if (dLon > 180) dLon -= 360;
+            if (dLon < -180) dLon += 360;
+            this.centerLat = Math.max(-82, Math.min(82, this.centerLat + (anchor.lat - after.lat)));
+            this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
+          }
+        }
+
+        this._pinchDist = dist;
+        this._pinchMid = mid;
+        return;
+      }
+
       if (this.isDragging) {
         const dx = e.clientX - this.lastPointer.x;
         const dy = e.clientY - this.lastPointer.y;
-        if (Math.hypot(dx, dy) > 2) {
+        const tapSlop = e.pointerType === 'touch' ? 9 : 3;
+        if (
+          !this.dragMoved &&
+          Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y) > tapSlop
+        ) {
           this.dragMoved = true;
           this.followSelected = false;
         }
-        // Exact 1:1 cursor-locked spherical panning at every zoom & latitude
-        const radPerPx = 1 / Math.max(80, this.radius);
-        const cosLat = Math.max(0.18, Math.cos(this.centerLat * DEG2RAD));
-        const dLat = dy * radPerPx * RAD2DEG;
-        const dLon = -(dx * radPerPx * RAD2DEG) / cosLat;
+        if (this.dragMoved) {
+          // Exact 1:1 cursor-locked spherical panning at every zoom & latitude
+          const radPerPx = 1 / Math.max(80, this.radius);
+          const cosLat = Math.max(0.18, Math.cos(this.centerLat * DEG2RAD));
+          const dLat = dy * radPerPx * RAD2DEG;
+          const dLon = -(dx * radPerPx * RAD2DEG) / cosLat;
 
-        this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
-        this.centerLat = Math.max(-82, Math.min(82, this.centerLat + dLat));
-        this.velLon = dLon;
-        this.velLat = dLat;
+          this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
+          this.centerLat = Math.max(-82, Math.min(82, this.centerLat + dLat));
+          this.velLon = dLon;
+          this.velLat = dLat;
+        }
         this.lastPointer = { x: e.clientX, y: e.clientY };
         return;
       }
 
+      // Skip floating hover tooltips for touch pointers
+      if (e.pointerType === 'touch') return;
+
       // Check cluster hit first, then individual vessel
-      const cluster = this._pickCluster(mx, my);
+      const cluster = this._pickCluster(mx, my, false);
       if (cluster) {
         this.hoveredClusterId = cluster.id;
         this.hoveredMmsi = null;
@@ -376,7 +448,7 @@ export class GlobeEngine {
         this.onHoverCluster(null, 0, 0);
       }
 
-      const hit = this._pickVessel(mx, my);
+      const hit = this._pickVessel(mx, my, false);
       const hitId = hit ? hit.mmsi : null;
       if (hitId !== this.hoveredMmsi) {
         this.hoveredMmsi = hitId;
@@ -386,17 +458,35 @@ export class GlobeEngine {
     });
 
     const endDrag = (e) => {
-      if (!this.isDragging) return;
+      const wasActive = this._pointers.has(e.pointerId);
+      this._pointers.delete(e.pointerId);
+
+      // Transition cleanly from 2-finger pinch back to 1-finger pan without jumping
+      if (this._pointers.size === 1) {
+        const [remaining] = Array.from(this._pointers.values());
+        this.isPinching = false;
+        this.isDragging = true;
+        this.dragMoved = true;
+        this.velLat = 0;
+        this.velLon = 0;
+        this.lastPointer = { x: remaining.x, y: remaining.y };
+        return;
+      }
+
+      if (!wasActive && !this.isDragging && !this.isPinching) return;
+      const wasPinching = this.isPinching;
       this.isDragging = false;
+      this.isPinching = false;
       this.canvas.style.cursor = this.hoveredMmsi || this.hoveredClusterId ? 'pointer' : 'grab';
 
-      if (!this.dragMoved) {
+      if (!this.dragMoved && !wasPinching && e.type === 'pointerup') {
         const rect = this.canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
+        const isTouch = e.pointerType === 'touch';
 
-        // Clicking a cluster smoothly zooms into it
-        const cluster = this._pickCluster(mx, my);
+        // Tapping/clicking a cluster smoothly zooms into it
+        const cluster = this._pickCluster(mx, my, isTouch);
         if (cluster) {
           this.followSelected = false;
           const nextZoom = Math.min(this.maxZoom, Math.max(this.zoom * 2.5, 3.6));
@@ -404,9 +494,26 @@ export class GlobeEngine {
           return;
         }
 
-        const hit = this._pickVessel(mx, my);
+        const hit = this._pickVessel(mx, my, isTouch);
         if (hit) {
           this.onSelectVessel(hit);
+          return;
+        }
+
+        // Touch double-tap anywhere on the map smoothly zooms 2.6x into that spot
+        if (isTouch) {
+          const now = performance.now();
+          const prev = this._lastTouchTap;
+          if (now - prev.time < 320 && Math.hypot(mx - prev.x, my - prev.y) < 34) {
+            this._lastTouchTap = { time: 0, x: 0, y: 0 };
+            const pos = this.screenToLatLon(mx, my);
+            if (pos) {
+              this.followSelected = false;
+              this.flyTo(pos.lat, pos.lon, Math.min(this.maxZoom, this.zoom * 2.6), 420);
+            }
+          } else {
+            this._lastTouchTap = { time: now, x: mx, y: my };
+          }
         }
       }
     };
@@ -427,7 +534,7 @@ export class GlobeEngine {
       const rect = this.canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      if (this._pickCluster(mx, my) || this._pickVessel(mx, my)) return;
+      if (this._pickCluster(mx, my, false) || this._pickVessel(mx, my, false)) return;
       const pos = this.screenToLatLon(mx, my);
       if (pos) {
         this.followSelected = false;
@@ -469,17 +576,18 @@ export class GlobeEngine {
     );
   }
 
-  _pickCluster(mx, my) {
+  _pickCluster(mx, my, isTouch = false) {
+    const pad = isTouch ? 12 : 3;
     for (let i = this.screenClusters.length - 1; i >= 0; i--) {
       const c = this.screenClusters[i];
-      if (Math.hypot(c.sx - mx, c.sy - my) <= c.r + 3) return c;
+      if (Math.hypot(c.sx - mx, c.sy - my) <= c.r + pad) return c;
     }
     return null;
   }
 
-  _pickVessel(mx, my) {
+  _pickVessel(mx, my, isTouch = false) {
     let best = null;
-    let bestDist = 14;
+    let bestDist = isTouch ? 26 : 14;
     for (let i = this.screenVessels.length - 1; i >= 0; i--) {
       const sv = this.screenVessels[i];
       const d = Math.hypot(sv.sx - mx, sv.sy - my);
@@ -509,6 +617,14 @@ export class GlobeEngine {
   }
 
   _updateCamera(ts, dt) {
+    const mobileSheetActive = this.width <= 768 && Boolean(this.selectedMmsi);
+    const targetCy = mobileSheetActive ? this.height * 0.32 : this.height * 0.5;
+    if (Math.abs(this.cy - targetCy) > 0.5) {
+      this.cy += (targetCy - this.cy) * Math.min(1, dt * 9);
+    } else {
+      this.cy = targetCy;
+    }
+
     if (this.flyTarget) {
       const f = this.flyTarget;
       const t = Math.min(1, (ts - f.startTs) / f.durationMs);
@@ -726,9 +842,14 @@ export class GlobeEngine {
   }
 
   _drawScaleBar(ctx, P) {
+    const isMobile = this.width <= 768;
+    if (isMobile && typeof document !== 'undefined' && document.body?.classList?.contains('inspector-open')) {
+      return;
+    }
+
     const EARTH_RADIUS_M = 6371000;
     const metersPerPx = EARTH_RADIUS_M / Math.max(80, this.radius);
-    const targetPx = 110;
+    const targetPx = isMobile ? 84 : 110;
     const rawMeters = metersPerPx * targetPx;
 
     // Snap to clean 1 / 2 / 5 × 10^n nautical-friendly distance
@@ -736,32 +857,33 @@ export class GlobeEngine {
     const norm = rawMeters / pow10;
     const niceMult = norm >= 5 ? 5 : norm >= 2 ? 2 : 1;
     const distM = niceMult * pow10;
-    const barPx = Math.max(36, Math.min(180, distM / metersPerPx));
+    const barPx = Math.max(32, Math.min(isMobile ? 120 : 180, distM / metersPerPx));
 
     const kmText = distM >= 1000 ? `${(distM / 1000).toLocaleString()} km` : `${Math.round(distM)} m`;
     const nmVal = distM / 1852;
     const nmText = nmVal >= 10 ? `${Math.round(nmVal).toLocaleString()} NM` : `${nmVal.toFixed(1)} NM`;
     const label = `${kmText} · ${nmText}`;
 
-    const x = this.width - barPx - 20;
-    const y = this.height - 54;
+    const rightMargin = isMobile ? 10 : 14;
+    const x = this.width - barPx - (rightMargin + 6);
+    const y = isMobile ? this.height - 72 : this.height - 54;
 
     ctx.save();
-    ctx.font = '600 10px ui-monospace, SFMono-Regular, monospace';
+    ctx.font = `600 ${isMobile ? 9.5 : 10}px ui-monospace, SFMono-Regular, monospace`;
     const textW = ctx.measureText(label).width;
     const boxW = Math.max(barPx, textW) + 14;
-    const boxX = this.width - boxW - 14;
+    const boxX = this.width - boxW - rightMargin;
     const boxY = y - 19;
 
     ctx.fillStyle = P.portLabelBg;
     ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxW, 26, 5);
+    ctx.roundRect(boxX, boxY, boxW, 25, 5);
     ctx.fill();
 
     ctx.fillStyle = P.portLabel;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'bottom';
-    ctx.fillText(label, this.width - 21, y - 4);
+    ctx.fillText(label, this.width - (rightMargin + 7), y - 4);
 
     ctx.strokeStyle = P.portDot;
     ctx.lineWidth = 1.8;
@@ -1328,21 +1450,31 @@ export class GlobeEngine {
       this._drawShipGlyph(ctx, item.sx, item.sy, item.angle, baseSize * 1.45, meta.color, true);
 
       if (item.isSelected) {
-        const text = `${v.name} · ${v.sog} kn · ${v.cog}°${v.destination ? ` → ${v.destination}` : ''}`;
+        const shortText = `${v.name} · ${v.sog} kn · ${v.cog}°`;
+        const fullText = v.destination ? `${shortText} → ${v.destination}` : shortText;
         ctx.font = '600 11.5px system-ui, -apple-system, sans-serif';
-        const tw = ctx.measureText(text).width;
-        const bx = item.sx + 13;
-        const by = item.sy - 23;
+        const maxBoxW = Math.max(140, this.width - 20);
+        let text = fullText;
+        let tw = ctx.measureText(text).width;
+        if (tw + 14 > maxBoxW) {
+          text = shortText;
+          tw = ctx.measureText(text).width;
+        }
+        const boxW = Math.min(maxBoxW, tw + 14);
+        let bx = item.sx + 13;
+        if (bx + boxW > this.width - 10) bx = item.sx - boxW - 13;
+        bx = Math.max(10, Math.min(this.width - boxW - 10, bx));
+        const by = Math.max(104, Math.min(this.height - 34, item.sy - 26));
         ctx.fillStyle = P.calloutBg;
         ctx.beginPath();
-        ctx.roundRect(bx, by, tw + 14, 22, 5);
+        ctx.roundRect(bx, by, boxW, 22, 5);
         ctx.fill();
         ctx.strokeStyle = meta.color;
         ctx.lineWidth = 1.1;
         ctx.stroke();
         ctx.fillStyle = P.calloutText;
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, bx + 7, by + 11);
+        ctx.fillText(text, bx + 7, by + 11, boxW - 14);
       }
     }
   }

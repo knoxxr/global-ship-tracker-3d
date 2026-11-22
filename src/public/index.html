@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>MarineGlobe 3D — 전 세계 실시간 AIS 선박 추적 (Live Only)</title>
   <meta
     name="description"
@@ -25,7 +25,7 @@
     <!-- Top Navigation Bar -->
     <header class="topbar">
       <div class="brand">
-        <button id="btn-toggle-sidebar" class="btn btn-icon" title="선박 목록 열기/닫기" aria-label="선박 목록 토글">☰</button>
+        <button id="btn-toggle-sidebar" class="btn btn-icon" title="선박 목록 열기/닫기" aria-label="선박 목록 토글" aria-expanded="true">☰</button>
         <div class="brand-mark" aria-hidden="true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="9"></circle>
@@ -42,18 +42,24 @@
 
       <div class="topbar-right">
         <div class="telemetry-strip mono" id="status-strip">
-          <span><i class="status-dot sim" id="status-dot"></i><strong id="status-mode">연결 중</strong></span>
-          <span>실선박 <strong id="stat-vessels">0</strong></span>
-          <span>수신 <strong id="stat-rate">0</strong>/s</span>
+          <span class="status-mode-wrap"><i class="status-dot sim" id="status-dot"></i><strong class="status-mode-text" id="status-mode">연결 중</strong></span>
+          <span class="status-vessels-wrap"><span class="status-label">실선박 </span><strong id="stat-vessels">0</strong></span>
+          <span class="status-rate-wrap">수신 <strong id="stat-rate">0</strong>/s</span>
         </div>
-        <button id="btn-fleet-table" class="btn btn-primary">전체 선박 표</button>
-        <button id="btn-api-config" class="btn">AIS 피드 설정</button>
-        <button id="btn-theme" class="btn btn-icon" title="라이트/다크 테마 전환">☀</button>
+        <button id="btn-fleet-table" class="btn btn-primary" title="전체 선박 표"><span class="label-desktop">전체 선박 표</span><span class="label-mobile">선박표</span></button>
+        <button id="btn-api-config" class="btn" title="AIS 피드 설정"><span class="label-desktop">AIS 피드 설정</span><span class="label-mobile">피드</span></button>
+        <button id="btn-theme" class="btn btn-icon" title="라이트/다크 테마 전환" aria-label="테마 전환">☀</button>
       </div>
     </header>
 
+    <div id="mobile-backdrop" class="mobile-backdrop hidden" aria-hidden="true"></div>
+
     <!-- Left Sidebar: Search, Filter, Summary & All Live Vessels -->
     <aside id="sidebar" class="sidebar" aria-label="실시간 선박 검색 및 전체 목록">
+      <div class="sidebar-mobile-bar">
+        <span>실시간 선박 검색 · 목록</span>
+        <button id="btn-close-sidebar" class="btn btn-icon" type="button" title="선박 목록 닫기" aria-label="선박 목록 닫기">✕</button>
+      </div>
       <div class="sidebar-header">
         <input
           id="search-input"
