@@ -16,10 +16,12 @@ import {
   describeAisShipType,
   parseOpenWatersEvent,
   parseOpenWatersFeature,
+  parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
   parseAisStreamMessage,
 } from '../src/ais-parser.js';
+import { decodeMvtPoints } from '../src/mvt-decoder.js';
 import { LIVE_ZONES, buildBboxAround } from '../src/live-zones.js';
 import { ShipTrackerServer } from '../src/server.js';
 
@@ -214,6 +216,63 @@ describe('Live AIS Parsers (Open Waters, Digitraffic, AISStream)', () => {
       Message: { PositionReport: { Latitude: 91, Longitude: 181 } },
     });
     assert.equal(invalid, null);
+  });
+
+  it('decodes Mapbox Vector Tile (MVT v2) binary points and normalizes to live vessel', () => {
+    const varint = (n) => {
+      const out = [];
+      let v = n;
+      while (v >= 0x80) { out.push((v & 0x7f) | 0x80); v = Math.floor(v / 128); }
+      out.push(v);
+      return out;
+    };
+    const zigzag = (n) => (n >= 0 ? n * 2 : -n * 2 - 1);
+    const fieldBytes = (num, bytes) => [...varint((num << 3) | 2), ...varint(bytes.length), ...bytes];
+    const fieldVarint = (num, val) => [...varint((num << 3) | 0), ...varint(val)];
+    const fieldStr = (num, str) => fieldBytes(num, [...new TextEncoder().encode(str)]);
+
+    const v0 = fieldStr(1, 'HMM BUSAN');
+    const v1 = fieldVarint(5, 440999888);
+    const fBuf = new ArrayBuffer(4);
+    new DataView(fBuf).setFloat32(0, 19.5, true);
+    const v2 = [...varint((2 << 3) | 5), ...new Uint8Array(fBuf)];
+    const v3 = fieldVarint(5, 71);
+    const v4 = fieldStr(1, 'vessel');
+
+    const geom = [...varint(9), ...varint(zigzag(3515)), ...varint(zigzag(1610))];
+    const tags = [...varint(0), ...varint(0), ...varint(1), ...varint(1), ...varint(2), ...varint(2), ...varint(3), ...varint(3), ...varint(4), ...varint(4)];
+    const feature = [
+      ...fieldVarint(1, 440999888),
+      ...fieldBytes(2, tags),
+      ...fieldVarint(3, 1),
+      ...fieldBytes(4, geom),
+    ];
+    const layer = [
+      ...fieldStr(1, 'vessels'),
+      ...fieldBytes(2, feature),
+      ...fieldStr(3, 'name'),
+      ...fieldStr(3, 'mmsi'),
+      ...fieldStr(3, 'sog'),
+      ...fieldStr(3, 'type'),
+      ...fieldStr(3, 'kind'),
+      ...fieldBytes(4, v0),
+      ...fieldBytes(4, v1),
+      ...fieldBytes(4, v2),
+      ...fieldBytes(4, v3),
+      ...fieldBytes(4, v4),
+      ...fieldVarint(5, 4096),
+      ...fieldVarint(15, 2),
+    ];
+
+    const pts = decodeMvtPoints(new Uint8Array(fieldBytes(3, layer)), 0, 0, 0);
+    assert.equal(pts.length, 1);
+    assert.ok(pts[0].lat > 30 && pts[0].lat < 42 && pts[0].lon > 120 && pts[0].lon < 135);
+    const vessel = parseOpenWatersTilePoint(pts[0]);
+    assert.ok(vessel);
+    assert.equal(vessel.name, 'HMM BUSAN');
+    assert.equal(vessel.mmsi, '440999888');
+    assert.equal(vessel.type, 'container');
+    assert.equal(vessel.sog, 19.5);
   });
 });
 

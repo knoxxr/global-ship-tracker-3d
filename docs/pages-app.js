@@ -10,9 +10,11 @@
 import { GlobeEngine } from './globe-engine.js';
 import { VESSEL_TYPES } from './world-data.js';
 import { LIVE_ZONES, buildBboxAround } from './live-zones.js';
+import { decodeMvtPoints } from './mvt-decoder.js';
 import {
   parseOpenWatersEvent,
   parseOpenWatersFeature,
+  parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
 } from './ais-parser.js';
@@ -27,7 +29,23 @@ import {
   exportVesselsCsv,
 } from './telemetry-ui.js';
 
-const MAX_VESSELS = 30000;
+const MAX_VESSELS = 60000;
+
+async function runPool(items, concurrency, fn) {
+  let idx = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (idx < items.length) {
+        const cur = items[idx++];
+        try {
+          await fn(cur);
+        } catch {
+          // isolate single tile/hub error
+        }
+      }
+    })
+  );
+}
 
 const state = {
   provider: 'openwaters',
@@ -37,7 +55,8 @@ const state = {
   activeBbox: LIVE_ZONES[0].bbox,
   connectionState: 'connecting',
   lastError: null,
-  loadedZones: 0,
+  loadedSteps: 0,
+  totalSteps: 64 + LIVE_ZONES.length,
   ws: null,
   eventSource: null,
   pollTimer: null,
@@ -108,7 +127,7 @@ const dom = {
 const globe = new GlobeEngine(dom.canvas, {
   initialLat: 28,
   initialLon: 124,
-  initialZoom: 1.45,
+  initialZoom: 1.4,
   theme: state.theme,
   onSelectVessel: (vessel) => selectVessel(vessel.mmsi, true),
   onHoverVessel: (vessel, mx, my) => {
@@ -136,20 +155,20 @@ function updateStatusBadge() {
       ? 'LIVE DIGITRAFFIC'
       : state.provider === 'remote-sse'
         ? 'LIVE BACKEND'
-        : 'LIVE OPENWATERS';
+        : 'LIVE GLOBAL AIS';
 
   dom.statusDot.classList.remove('sim', 'error');
   if (state.connectionState === 'connected') {
-    dom.statusMode.textContent = label;
+    dom.statusMode.textContent =
+      state.provider === 'openwaters' && state.loadedSteps < state.totalSteps
+        ? `전역 수신 ${Math.round((state.loadedSteps / state.totalSteps) * 100)}%`
+        : label;
   } else if (state.connectionState === 'error') {
     dom.statusDot.classList.add('error');
     dom.statusMode.textContent = '피드 오류';
   } else {
     dom.statusDot.classList.add('sim');
-    dom.statusMode.textContent =
-      state.loadedZones > 0
-        ? `수신 중 (${state.loadedZones}/${LIVE_ZONES.length})`
-        : '실시간 연결 중...';
+    dom.statusMode.textContent = '전역 연결 중...';
   }
 }
 
@@ -178,12 +197,11 @@ function disconnectAll() {
   }
 }
 
-// --- Open Waters Live REST & WebSocket ---
+// --- Open Waters Global MVT Vector Tiles + Un-thinned REST Hubs + Live WebSocket ---
 async function fetchOpenWatersBbox(bbox) {
   const [minLat, minLon, maxLat, maxLon] = bbox;
   const params = new URLSearchParams({
     bbox: `${minLat},${minLon},${maxLat},${maxLon}`,
-    max_age: '30m',
     kind: 'vessel',
   });
   if (state.openWatersToken) params.set('key', state.openWatersToken);
@@ -198,6 +216,24 @@ async function fetchOpenWatersBbox(bbox) {
   for (const f of features) {
     const existing = state.vesselsMap.get(String(f.properties?.mmsi || f.id || ''));
     const parsed = parseOpenWatersFeature(f, existing);
+    if (parsed) {
+      upsertVessel(parsed);
+      loaded++;
+    }
+  }
+  return loaded;
+}
+
+async function fetchOpenWatersTile(z, x, y) {
+  const params = new URLSearchParams({ kind: 'vessel' });
+  if (state.openWatersToken) params.set('key', state.openWatersToken);
+  const res = await fetch(`https://ais.openwaters.io/v1/vessels/tiles/${z}/${x}/${y}?${params}`);
+  if (res.status !== 200) return 0;
+  const pts = decodeMvtPoints(await res.arrayBuffer(), z, x, y);
+  let loaded = 0;
+  for (const pt of pts) {
+    const existing = state.vesselsMap.get(String(pt.properties?.mmsi || pt.id || ''));
+    const parsed = parseOpenWatersTilePoint(pt, existing);
     if (parsed) {
       upsertVessel(parsed);
       loaded++;
@@ -275,33 +311,49 @@ async function startOpenWaters() {
   state.provider = 'openwaters';
   state.connectionState = 'connecting';
   state.lastError = null;
-  state.loadedZones = 0;
+  state.loadedSteps = 0;
+  state.totalSteps = 64 + LIVE_ZONES.length;
   updateStatusBadge();
 
-  // Immediately open live WebSocket for the active zone while progressive REST snapshots stream in
+  // Start live WebSocket stream immediately
   connectOpenWatersWs(state.activeBbox);
 
   let totalLoaded = 0;
-  await Promise.allSettled(
-    LIVE_ZONES.map(async (z) => {
-      try {
-        const n = await fetchOpenWatersBbox(z.bbox);
-        totalLoaded += n;
-        state.loadedZones++;
-        if (n > 0) {
-          state.connectionState = 'connected';
-          syncFromMap();
-        }
-      } catch {
-        state.loadedZones++;
-      }
-    })
-  );
+
+  // Phase 1: Instant East Asia + Singapore un-thinned hubs (< 0.8s)
+  const priorityZones = LIVE_ZONES.slice(0, 4);
+  const restZones = LIVE_ZONES.slice(4);
+  await runPool(priorityZones, 4, async (z) => {
+    totalLoaded += await fetchOpenWatersBbox(z.bbox);
+    state.loadedSteps++;
+    if (totalLoaded > 0) state.connectionState = 'connected';
+  });
+  syncFromMap();
+
+  // Phase 2: Full-planet z=3 MVT vector tiles (64 tiles covering EVERY ocean & coastline!)
+  const z3Tiles = [];
+  for (let x = 0; x < 8; x++) {
+    for (let y = 0; y < 8; y++) z3Tiles.push([3, x, y]);
+  }
+  await runPool(z3Tiles, 6, async ([z, x, y]) => {
+    totalLoaded += await fetchOpenWatersTile(z, x, y);
+    state.loadedSteps++;
+    if (state.loadedSteps % 12 === 0) syncFromMap();
+  });
+  syncFromMap();
+
+  // Phase 3: Remaining 12 dense global hubs un-thinned (Europe, Americas, Middle East, Africa, Oceania)
+  await runPool(restZones, 4, async (z) => {
+    totalLoaded += await fetchOpenWatersBbox(z.bbox);
+    state.loadedSteps++;
+    if (state.loadedSteps % 3 === 0) syncFromMap();
+  });
 
   if (totalLoaded === 0 && state.vesselsMap.size === 0) {
     await startDigitraffic();
   } else {
     state.connectionState = 'connected';
+    state.loadedSteps = state.totalSteps;
     syncFromMap();
   }
 }

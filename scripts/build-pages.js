@@ -11,6 +11,7 @@ const docsDir = path.join(root, 'docs');
 const FILES_TO_COPY = [
   ['src/geo-math.js', 'geo-math.js'],
   ['src/live-zones.js', 'live-zones.js'],
+  ['src/mvt-decoder.js', 'mvt-decoder.js'],
   ['src/ais-parser.js', 'ais-parser.js'],
   ['src/public/world-data.js', 'world-data.js'],
   ['src/public/globe-engine.js', 'globe-engine.js'],

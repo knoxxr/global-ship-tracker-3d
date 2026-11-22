@@ -17,9 +17,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LIVE_ZONES } from './live-zones.js';
+import { decodeMvtPoints } from './mvt-decoder.js';
 import {
   parseOpenWatersEvent,
   parseOpenWatersFeature,
+  parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
   parseAisStreamMessage,
@@ -30,8 +32,8 @@ const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const USER_AGENT = 'MarineGlobe3D/2.0 (https://github.com/knoxxr/global-ship-tracker-3d)';
-const MAX_LIVE_VESSELS = 30000;
-const STALE_VESSEL_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_LIVE_VESSELS = 60000;
+const STALE_VESSEL_MS = 7 * 24 * 60 * 60 * 1000; // Keep stationary port vessels up to 7 days like Open Waters
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -42,6 +44,22 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
 };
+
+async function runPool(items, concurrency, fn) {
+  let idx = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (idx < items.length) {
+        const item = items[idx++];
+        try {
+          await fn(item);
+        } catch {
+          // isolate per-item failure
+        }
+      }
+    })
+  );
+}
 
 export class ShipTrackerServer {
   constructor(options = {}) {
@@ -165,7 +183,6 @@ export class ShipTrackerServer {
     const [minLat, minLon, maxLat, maxLon] = bbox;
     const params = new URLSearchParams({
       bbox: `${minLat},${minLon},${maxLat},${maxLon}`,
-      max_age: '30m',
       kind: 'vessel',
     });
     const headers = { 'User-Agent': USER_AGENT, Accept: 'application/json' };
@@ -194,15 +211,44 @@ export class ShipTrackerServer {
     return added;
   }
 
+  async _fetchOpenWatersTile(z, x, y) {
+    const headers = { 'User-Agent': USER_AGENT };
+    if (this.openWatersToken) headers.Authorization = `Bearer ${this.openWatersToken}`;
+    const res = await fetch(
+      `https://ais.openwaters.io/v1/vessels/tiles/${z}/${x}/${y}?kind=vessel`,
+      { headers, signal: AbortSignal.timeout(10000) }
+    );
+    if (res.status !== 200) return 0;
+    const pts = decodeMvtPoints(await res.arrayBuffer(), z, x, y);
+    let added = 0;
+    for (const pt of pts) {
+      const existing = this.vessels.get(String(pt.properties?.mmsi || pt.id || ''));
+      const parsed = parseOpenWatersTilePoint(pt, existing);
+      if (parsed) {
+        this._upsertVessel(parsed);
+        added++;
+      }
+    }
+    return added;
+  }
+
   async _bootstrapOpenWatersGlobal() {
     try {
       let totalLoaded = 0;
-      const results = await Promise.allSettled(
-        LIVE_ZONES.map((z) => this._fetchOpenWatersBbox(z.bbox))
-      );
-      for (const r of results) {
-        if (r.status === 'fulfilled') totalLoaded += r.value;
+      // 1. All 64 global z=3 MVT vector tiles (every ocean & coastline worldwide)
+      const z3Tiles = [];
+      for (let x = 0; x < 8; x++) {
+        for (let y = 0; y < 8; y++) z3Tiles.push([3, x, y]);
       }
+      await runPool(z3Tiles, 6, async ([z, x, y]) => {
+        totalLoaded += await this._fetchOpenWatersTile(z, x, y);
+      });
+
+      // 2. Un-thinned REST detail for 16 major global hubs
+      await runPool(LIVE_ZONES, 4, async (z) => {
+        totalLoaded += await this._fetchOpenWatersBbox(z.bbox);
+      });
+
       if (totalLoaded > 0) {
         this.connectionState = 'connected';
         this.broadcastSse('snapshot', {
@@ -210,11 +256,10 @@ export class ShipTrackerServer {
           status: this.getStatus(),
         });
       } else {
-        // Fallback automatically to live official Fintraffic Digitraffic if Open Waters returned 0
         await this._pollDigitraffic();
       }
     } catch (err) {
-      this.lastError = `Open Waters 스냅샷 오류: ${err.message}`;
+      this.lastError = `Open Waters 전역 로드 오류: ${err.message}`;
       this.connectionState = 'error';
       this.broadcastSse('status', this.getStatus());
     }

@@ -427,6 +427,66 @@ export function parseOpenWatersFeature(feature, existing = null) {
 }
 
 /**
+ * Parse a decoded Open Waters MVT vector tile point (/v1/vessels/tiles/{z}/{x}/{y}).
+ */
+export function parseOpenWatersTilePoint(pt, existing = null) {
+  if (!pt || !isValidLatLon(pt.lat, pt.lon)) return null;
+  const props = pt.properties || {};
+  const mmsi = String(props.mmsi || pt.id || '').trim();
+  if (!mmsi) return null;
+
+  // Skip non-vessel markers if present
+  if (props.kind && props.kind !== 'vessel') return null;
+
+  const base = existing ? { ...existing } : createEmptyVessel(mmsi, props.source || 'openwaters');
+  base.lat = Number(pt.lat.toFixed(5));
+  base.lon = Number(pt.lon.toFixed(5));
+  if (base.trail.length === 0) {
+    base.trail = [[base.lat, base.lon]];
+  }
+
+  if (props.name && String(props.name).trim()) base.name = String(props.name).trim();
+  if (props.class) base.aisClass = props.class === 'B' ? 'Class B' : 'Class A';
+  if (props.flag && String(props.flag).trim()) base.flagCode = String(props.flag).trim();
+
+  const shipType = Number(props.type);
+  if (Number.isFinite(shipType) && shipType > 0) {
+    base.aisTypeCode = shipType;
+    base.type = classifyAisShipType(shipType);
+    base.aisTypeDesc = describeAisShipType(shipType);
+  }
+
+  if (Number.isFinite(Number(props.sog)) && Number(props.sog) < 102) {
+    base.sog = Number(Number(props.sog).toFixed(1));
+  }
+  const cogVal = props.cog ?? props.hdg;
+  if (Number.isFinite(Number(cogVal)) && Number(cogVal) < 360) {
+    base.cog = Math.round(Number(cogVal));
+  }
+  if (Number.isFinite(Number(props.heading)) && Number(props.heading) < 360) {
+    base.heading = Math.round(Number(props.heading));
+  }
+  if (props.nav_status !== undefined && props.nav_status !== null) {
+    base.navStatusCode = Number(props.nav_status);
+    base.navStatus = NAV_STATUS_MAP[base.navStatusCode] || base.navStatus;
+  }
+
+  if (Number.isFinite(Number(props.length)) && Number(props.length) > 0) base.length = Math.round(Number(props.length));
+  if (Number.isFinite(Number(props.beam)) && Number(props.beam) > 0) base.beam = Math.round(Number(props.beam));
+  if (Number.isFinite(Number(props.to_bow))) base.dimA = Number(props.to_bow);
+  if (Number.isFinite(Number(props.to_stern))) base.dimB = Number(props.to_stern);
+  if (Number.isFinite(Number(props.to_port))) base.dimC = Number(props.to_port);
+  if (Number.isFinite(Number(props.to_starboard))) base.dimD = Number(props.to_starboard);
+  if (props.source) base.source = String(props.source);
+  if (props.station) base.station = String(props.station);
+
+  if (Number.isFinite(Number(props.age_s))) {
+    base.updatedAt = Date.now() - Math.max(0, Number(props.age_s)) * 1000;
+  }
+  return base;
+}
+
+/**
  * Parse Open Waters AIS /v1/vessels/{mmsi}/track GeoJSON Feature into [[lat, lon], ...].
  */
 export function parseOpenWatersTrack(geo) {
