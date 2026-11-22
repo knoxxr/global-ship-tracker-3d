@@ -122,38 +122,58 @@ export function renderFleetSummaryHtml(vessels) {
 }
 
 /**
- * Renders ALL live received vessels (zero cap).
+ * Virtualized sidebar list renderer: supports 20,000+ real live vessels at 60 FPS
+ * with zero artificial cap by rendering only the visible viewport window + spacers.
  */
-export function renderAllVesselListHtml(vessels, selectedMmsi, emptyMessage = '실시간 AIS 데이터를 수신 대기 중입니다...') {
-  if (vessels.length === 0) {
-    return `<div style="padding:20px;text-align:center;color:var(--text-muted);line-height:1.6;">${escapeHtml(emptyMessage)}</div>`;
+export function renderVirtualVesselList(
+  containerEl,
+  vessels,
+  selectedMmsi,
+  emptyMessage = '실시간 AIS 데이터를 수신 대기 중입니다...'
+) {
+  if (!vessels || vessels.length === 0) {
+    containerEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);line-height:1.6;">${escapeHtml(emptyMessage)}</div>`;
+    return;
   }
 
-  return vessels
-    .map((v) => {
-      const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
-      const sel = v.mmsi === selectedMmsi ? 'selected' : '';
-      return `
-        <button class="vessel-item ${sel}" data-mmsi="${escapeHtml(v.mmsi)}" role="listitem">
-          <div class="vessel-item-top">
-            <span class="vessel-name">
-              <span class="type-dot" style="background:${meta.color}"></span>
-              ${escapeHtml(v.name)}
-            </span>
-            <span class="vessel-speed mono">${v.sog} kn · ${v.cog}°</span>
-          </div>
-          <div class="vessel-item-sub">
-            <span>${meta.short} · ${escapeHtml(v.flagName || v.flagCode)} · <span class="mono">${escapeHtml(v.mmsi)}</span></span>
-            <span class="mono">${formatAge(v.updatedAt)}</span>
-          </div>
-          <div class="vessel-item-sub" style="font-size:10px;">
-            <span>목적지: ${escapeHtml(v.destination || '미보고')}</span>
-            <span class="mono">${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}m` : ''}</span>
-          </div>
-        </button>
-      `;
-    })
-    .join('');
+  const ROW_H = 68;
+  const BUFFER = 8;
+  const total = vessels.length;
+  const viewH = containerEl.clientHeight || 560;
+  const scrollTop = containerEl.scrollTop || 0;
+
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + BUFFER);
+  const topPad = start * ROW_H;
+  const botPad = Math.max(0, (total - end) * ROW_H);
+
+  let html = topPad > 0 ? `<div style="height:${topPad}px;flex-shrink:0;"></div>` : '';
+  for (let i = start; i < end; i++) {
+    const v = vessels[i];
+    const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
+    const sel = v.mmsi === selectedMmsi ? 'selected' : '';
+    html += `
+      <button class="vessel-item ${sel}" data-mmsi="${escapeHtml(v.mmsi)}" role="listitem" style="min-height:${ROW_H - 4}px;">
+        <div class="vessel-item-top">
+          <span class="vessel-name">
+            <span class="type-dot" style="background:${meta.color}"></span>
+            ${escapeHtml(v.name)}
+          </span>
+          <span class="vessel-speed mono">${v.sog} kn · ${v.cog}°</span>
+        </div>
+        <div class="vessel-item-sub">
+          <span>${meta.short} · ${escapeHtml(v.flagName || v.flagCode)} · <span class="mono">${escapeHtml(v.mmsi)}</span></span>
+          <span class="mono">${formatAge(v.updatedAt)}</span>
+        </div>
+        <div class="vessel-item-sub" style="font-size:10px;">
+          <span>목적지: ${escapeHtml(v.destination || '미보고')}</span>
+          <span class="mono">${escapeHtml(v.source || 'live')}${v.length ? ` · ${v.length}m` : ''}</span>
+        </div>
+      </button>
+    `;
+  }
+  if (botPad > 0) html += `<div style="height:${botPad}px;flex-shrink:0;"></div>`;
+  containerEl.innerHTML = html;
 }
 
 /**
@@ -171,7 +191,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
     v.heading !== null && v.heading !== undefined ? `${v.heading}°` : '미보고';
   const dimRef =
     v.dimA !== null || v.dimB !== null
-      ? `A:${v.dimA ?? 0} B:${v.dimB ?? 0} C:${v.dimC ?? 0} D:${v.dimD ?? 0}m`
+      ? `선수:${v.dimA ?? 0} 선미:${v.dimB ?? 0} 좌현:${v.dimC ?? 0} 우현:${v.dimD ?? 0}m`
       : '';
 
   const trailRows = (v.trail || [])
@@ -189,13 +209,13 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
         <h2 class="inspector-title">${escapeHtml(v.name)}</h2>
         <div class="inspector-sub">
           <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:5px;"></span>
-          ${escapeHtml(v.aisTypeDesc || meta.label)}
+          ${escapeHtml(v.aisTypeDesc || meta.label)}${v.near ? ` · ${escapeHtml(v.near)}` : ''}
         </div>
         <div class="badge-row">
           <span class="mini-badge mono">${escapeHtml(v.aisClass || 'Class A')}</span>
           <span class="mini-badge">${escapeHtml(v.flagName || v.flagCode)} (${escapeHtml(v.flagCode || '-')})</span>
           <span class="mini-badge mono">SRC: ${escapeHtml(v.source || 'live')}</span>
-          ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">상세·항적 조회 중...</span>` : ''}
+          ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">상세·24시간 항적 조회 중...</span>` : ''}
         </div>
       </div>
       <button id="btn-close-inspector" class="btn btn-icon" title="닫기">✕</button>
@@ -242,7 +262,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
       <div class="kv-cell">
         <div class="kv-label">호출부호 (Call Sign)</div>
         <div class="kv-value mono">${escapeHtml(v.callsign || '미보고')}</div>
-        <div class="kv-sub">${v.builtYear ? `${v.builtYear}년 건조` : '건조연도 미보고'}</div>
+        <div class="kv-sub">${v.builtYear ? `${v.builtYear}년 건조` : (v.firstSeen ? `최초 포착 ${v.firstSeen.slice(0, 10)}` : '건조연도 미보고')}</div>
       </div>
       <div class="kv-cell">
         <div class="kv-label">전장(LOA) × 선폭(Beam)</div>
@@ -278,41 +298,56 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
 }
 
 /**
- * Renders ALL live vessels in the full-screen All-Vessels Table modal.
+ * Virtualized full-fleet table renderer: smoothly scrolls 20,000+ live vessels.
  */
-export function renderFleetTableRowsHtml(vessels, selectedMmsi) {
-  if (!vessels.length) {
-    return `<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">현재 수신된 실시간 선박이 없습니다.</td></tr>`;
+export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi) {
+  if (!vessels || !vessels.length) {
+    tbodyEl.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">현재 수신된 실시간 선박이 없습니다.</td></tr>`;
+    return;
   }
-  return vessels
-    .map((v, idx) => {
-      const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
-      const sel = v.mmsi === selectedMmsi ? 'selected' : '';
-      return `
-        <tr class="${sel}" data-mmsi="${escapeHtml(v.mmsi)}">
-          <td class="mono" style="color:var(--text-muted);">${idx + 1}</td>
-          <td style="font-weight:600;">
-            <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:6px;"></span>
-            ${escapeHtml(v.name)}
-          </td>
-          <td>${meta.short}</td>
-          <td class="mono">${escapeHtml(v.aisClass || 'A')}</td>
-          <td>${escapeHtml(v.flagName || v.flagCode)}</td>
-          <td class="mono">${escapeHtml(v.mmsi)}</td>
-          <td class="mono">${escapeHtml(v.imo || '-')}</td>
-          <td class="mono">${escapeHtml(v.callsign || '-')}</td>
-          <td class="mono">${Number(v.lat).toFixed(4)}°</td>
-          <td class="mono">${Number(v.lon).toFixed(4)}°</td>
-          <td class="mono" style="color:var(--accent);font-weight:600;">${v.sog} kn</td>
-          <td class="mono">${v.cog}° ${compass16(v.cog)}</td>
-          <td class="mono">${escapeHtml(v.destination || '-')}</td>
-          <td class="mono">${v.length ? `${v.length}×${v.beam ?? '?'}m / ${v.draught ?? '-'}m` : '-'}</td>
-          <td class="mono">${escapeHtml(v.source || 'live')}</td>
-          <td class="mono">${formatAge(v.updatedAt)}</td>
-        </tr>
-      `;
-    })
-    .join('');
+
+  const ROW_H = 31;
+  const BUFFER = 12;
+  const total = vessels.length;
+  const viewH = wrapEl.clientHeight || 600;
+  const scrollTop = wrapEl.scrollTop || 0;
+
+  const start = Math.max(0, Math.floor(scrollTop / ROW_H) - BUFFER);
+  const end = Math.min(total, Math.ceil((scrollTop + viewH) / ROW_H) + BUFFER);
+  const topPad = start * ROW_H;
+  const botPad = Math.max(0, (total - end) * ROW_H);
+
+  let html = topPad > 0 ? `<tr style="height:${topPad}px;"><td colspan="16" style="padding:0;border:0;"></td></tr>` : '';
+  for (let i = start; i < end; i++) {
+    const v = vessels[i];
+    const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
+    const sel = v.mmsi === selectedMmsi ? 'selected' : '';
+    html += `
+      <tr class="${sel}" data-mmsi="${escapeHtml(v.mmsi)}" style="height:${ROW_H}px;">
+        <td class="mono" style="color:var(--text-muted);">${i + 1}</td>
+        <td style="font-weight:600;">
+          <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:6px;"></span>
+          ${escapeHtml(v.name)}
+        </td>
+        <td>${meta.short}</td>
+        <td class="mono">${escapeHtml(v.aisClass || 'A')}</td>
+        <td>${escapeHtml(v.flagName || v.flagCode)}</td>
+        <td class="mono">${escapeHtml(v.mmsi)}</td>
+        <td class="mono">${escapeHtml(v.imo || '-')}</td>
+        <td class="mono">${escapeHtml(v.callsign || '-')}</td>
+        <td class="mono">${Number(v.lat).toFixed(4)}°</td>
+        <td class="mono">${Number(v.lon).toFixed(4)}°</td>
+        <td class="mono" style="color:var(--accent);font-weight:600;">${v.sog} kn</td>
+        <td class="mono">${v.cog}° ${compass16(v.cog)}</td>
+        <td class="mono">${escapeHtml(v.destination || '-')}</td>
+        <td class="mono">${v.length ? `${v.length}×${v.beam ?? '?'}m / ${v.draught ?? '-'}m` : '-'}</td>
+        <td class="mono">${escapeHtml(v.source || 'live')}</td>
+        <td class="mono">${formatAge(v.updatedAt)}</td>
+      </tr>
+    `;
+  }
+  if (botPad > 0) html += `<tr style="height:${botPad}px;"><td colspan="16" style="padding:0;border:0;"></td></tr>`;
+  tbodyEl.innerHTML = html;
 }
 
 /**

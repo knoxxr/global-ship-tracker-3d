@@ -761,42 +761,60 @@ export class GlobeEngine {
   _drawVessels(ctx, P, sinPhi0, cosPhi0, lam0, ts) {
     this.screenVessels = [];
     const selected = [];
-    const baseSize = Math.max(3.6, Math.min(7.4, 3.8 + this.zoom * 0.78));
+    const totalCount = this.vessels.length;
+    const denseGlobalMode = totalCount > 1200 && this.zoom < 2.1;
+    const baseSize = Math.max(3.2, Math.min(7.4, 3.6 + this.zoom * 0.78));
     const showAllLabels = this.options.showLabels || this.zoom >= 3.6;
     const placedLabels = [];
+    const wPad = this.width + 20;
+    const hPad = this.height + 20;
 
-    for (const v of this.vessels) {
+    for (let i = 0; i < totalCount; i++) {
+      const v = this.vessels[i];
       const phi = v.lat * DEG2RAD;
       const lam = v.lon * DEG2RAD;
       const p = this.projectRad(phi, lam, sinPhi0, cosPhi0, lam0);
-      if (p.z < 0.03) continue;
+      if (p.z < 0.03 || p.sx < -20 || p.sx > wPad || p.sy < -20 || p.sy > hPad) continue;
 
       const isSelected = v.mmsi === this.selectedMmsi;
       const isHovered = v.mmsi === this.hoveredMmsi;
 
-      // Compute true 3D screen heading by projecting a small step along COG
-      const cogRad = (v.cog || 0) * DEG2RAD;
-      const stepDeg = 0.6;
-      const lat2 = Math.max(-89, Math.min(89, v.lat + Math.cos(cogRad) * stepDeg));
-      const lon2 =
-        v.lon + (Math.sin(cogRad) * stepDeg) / Math.max(0.2, Math.cos(phi));
-      const p2 = this.projectRad(lat2 * DEG2RAD, lon2 * DEG2RAD, sinPhi0, cosPhi0, lam0);
-      const angle = Math.atan2(p2.sy - p.sy, p2.sx - p.sx);
-
-      const entry = { vessel: v, sx: p.sx, sy: p.sy, z: p.z, angle, isSelected, isHovered };
-      this.screenVessels.push(entry);
-
       if (isSelected || isHovered) {
+        const cogRad = (v.cog || 0) * DEG2RAD;
+        const lat2 = Math.max(-89, Math.min(89, v.lat + Math.cos(cogRad) * 0.6));
+        const lon2 = v.lon + (Math.sin(cogRad) * 0.6) / Math.max(0.2, Math.cos(phi));
+        const p2 = this.projectRad(lat2 * DEG2RAD, lon2 * DEG2RAD, sinPhi0, cosPhi0, lam0);
+        const angle = Math.atan2(p2.sy - p.sy, p2.sx - p.sx);
+        const entry = { vessel: v, sx: p.sx, sy: p.sy, z: p.z, angle, isSelected, isHovered };
+        this.screenVessels.push(entry);
         selected.push(entry);
         continue;
       }
 
       const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
-      if (this.options.showWakes && v.trail && v.trail.length > 1) {
-        this._drawWake(ctx, v.trail, meta.color, 0.28, 1.0, sinPhi0, cosPhi0, lam0);
+
+      // Fast LOD path for 20,000+ live vessels in zoomed-out global view
+      if (denseGlobalMode) {
+        this.screenVessels.push({ vessel: v, sx: p.sx, sy: p.sy, z: p.z, angle: 0, isSelected: false, isHovered: false });
+        const sz = (v.sog || 0) >= 1 ? 2.6 : 1.9;
+        ctx.fillStyle = meta.color;
+        ctx.fillRect(p.sx - sz * 0.5, p.sy - sz * 0.5, sz, sz);
+        continue;
       }
 
-      // Subtle ECDIS speed leader tick when zoomed in
+      // Detailed directional arrow path for regional/zoomed views
+      const cogRad = (v.cog || 0) * DEG2RAD;
+      const lat2 = Math.max(-89, Math.min(89, v.lat + Math.cos(cogRad) * 0.6));
+      const lon2 = v.lon + (Math.sin(cogRad) * 0.6) / Math.max(0.2, Math.cos(phi));
+      const p2 = this.projectRad(lat2 * DEG2RAD, lon2 * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      const angle = Math.atan2(p2.sy - p.sy, p2.sx - p.sx);
+
+      this.screenVessels.push({ vessel: v, sx: p.sx, sy: p.sy, z: p.z, angle, isSelected: false, isHovered: false });
+
+      if (this.options.showWakes && v.trail && v.trail.length > 1) {
+        this._drawWake(ctx, v.trail, meta.color, 0.35, 1.1, sinPhi0, cosPhi0, lam0);
+      }
+
       if (this.zoom >= 2.2 && v.sog > 1) {
         const tickLen = Math.min(18, baseSize + v.sog * 0.45);
         ctx.save();
@@ -812,7 +830,6 @@ export class GlobeEngine {
 
       this._drawShipGlyph(ctx, p.sx, p.sy, angle, baseSize, meta.color, false);
 
-      // Collision-free inline vessel labels when enabled or closely zoomed
       if (showAllLabels && p.z > 0.22 && placedLabels.length < 70) {
         const label = `${v.name} · ${v.sog}kn`;
         ctx.font = '500 10px system-ui, -apple-system, sans-serif';
@@ -839,7 +856,7 @@ export class GlobeEngine {
       }
     }
 
-    // Draw hovered & selected vessels on top with full wake, planned route, and radar ring
+    // Draw hovered & selected vessels on top with full wake, radar pulse, and callout
     for (const item of selected) {
       const v = item.vessel;
       const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
@@ -849,10 +866,9 @@ export class GlobeEngine {
       }
 
       if (v.trail && v.trail.length > 1) {
-        this._drawWake(ctx, v.trail, meta.color, 0.85, 2.2, sinPhi0, cosPhi0, lam0);
+        this._drawWake(ctx, v.trail, meta.color, 0.9, 2.2, sinPhi0, cosPhi0, lam0);
       }
 
-      // Forward speed/COG vector line
       const vecLen = Math.min(28, baseSize * 1.5 + (v.sog || 0) * 0.7);
       ctx.save();
       ctx.strokeStyle = meta.color;
@@ -884,9 +900,8 @@ export class GlobeEngine {
         true
       );
 
-      // Selected callout badge on globe
       if (item.isSelected) {
-        const text = `${v.name} · ${v.sog} kn · ${v.cog}° → ${v.destination || '-'}`;
+        const text = `${v.name} · ${v.sog} kn · ${v.cog}°${v.destination ? ` → ${v.destination}` : ''}`;
         ctx.font = '600 11.5px system-ui, -apple-system, sans-serif';
         const tw = ctx.measureText(text).width;
         const bx = item.sx + 12;

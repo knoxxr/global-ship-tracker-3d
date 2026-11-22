@@ -391,13 +391,23 @@ export function parseOpenWatersFeature(feature, existing = null) {
 
   if (Number.isFinite(Number(props.length)) && Number(props.length) > 0) base.length = Math.round(Number(props.length));
   if (Number.isFinite(Number(props.beam)) && Number(props.beam) > 0) base.beam = Math.round(Number(props.beam));
+  if (Number.isFinite(Number(props.to_bow))) base.dimA = Number(props.to_bow);
+  if (Number.isFinite(Number(props.to_stern))) base.dimB = Number(props.to_stern);
+  if (Number.isFinite(Number(props.to_port))) base.dimC = Number(props.to_port);
+  if (Number.isFinite(Number(props.to_starboard))) base.dimD = Number(props.to_starboard);
   if (Number.isFinite(Number(props.draught)) && Number(props.draught) > 0) base.draught = Number(props.draught);
   if (props.destination && String(props.destination).trim()) base.destination = String(props.destination).trim();
   if (props.eta && typeof props.eta === 'string') base.eta = props.eta;
+  if (props.near && String(props.near).trim()) base.near = String(props.near).trim();
+  if (props.first_seen && typeof props.first_seen === 'string') base.firstSeen = props.first_seen;
 
   if (props.source) base.source = String(props.source);
   if (props.station) base.station = String(props.station);
-  if (props.attribution) base.attribution = String(props.attribution);
+  if (typeof props.attribution === 'string' && props.attribution) {
+    base.attribution = props.attribution;
+  } else if (feature.attribution && typeof feature.attribution === 'object') {
+    base.attribution = Object.values(feature.attribution).filter(Boolean).join(' · ');
+  }
 
   // Merge registered particulars when returned by /v1/vessels/{mmsi}
   if (props.particulars && typeof props.particulars === 'object') {

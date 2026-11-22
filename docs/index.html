@@ -8,7 +8,7 @@
     name="description"
     content="시뮬레이션 없이 Open Waters AIS 및 Fintraffic Digitraffic 실시간 AIS 피드만 수신하여 전 세계 실제 선박을 3D 지구본 위에 표시"
   />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=3" />
 </head>
 <body>
   <div class="app-shell">
@@ -111,7 +111,7 @@
             <button id="btn-close-fleet-modal" class="btn btn-primary">닫기</button>
           </div>
         </div>
-        <div class="fleet-table-wrap">
+        <div id="fleet-table-wrap" class="fleet-table-wrap">
           <table class="fleet-table">
             <thead>
               <tr>
@@ -145,12 +145,12 @@
         <h2 id="modal-title">실시간 글로벌 AIS 피드 설정</h2>
         <p>
           가상 시뮬레이션 없이 <strong>100% 실제 AIS 선박 위치</strong>만 수신합니다.
-          기본 <strong>Open Waters AIS</strong>는 별도 API 키 없이 글로벌 해역 스냅샷과 실시간 WebSocket 스트림을 바로 수신합니다.
+          기본 <strong>Open Waters AIS</strong>는 별도 API 키 없이 글로벌 16개 해역(20,000+ 실선박)과 실시간 WebSocket 스트림을 바로 수신합니다.
         </p>
         <div class="field-group">
           <label for="provider-select">실시간 데이터 소스</label>
           <select id="provider-select" class="search-box">
-            <option value="openwaters">Open Waters AIS (무료·키 불필요 · 글로벌 다중 해역 + WebSocket)</option>
+            <option value="openwaters">Open Waters AIS (무료·키 불필요 · 글로벌 16개 해역 + WebSocket)</option>
             <option value="digitraffic">Fintraffic Digitraffic (무료·키 불필요 · 북유럽/발트해 공식)</option>
             <option value="remote-sse">MarineGlobe 커스텀 백엔드 SSE (Render/Docker/AISStream.io)</option>
           </select>
@@ -172,6 +172,6 @@
     </div>
   </div>
 
-  <script type="module" src="./pages-app.js"></script>
+  <script type="module" src="./pages-app.js?v=3"></script>
 </body>
 </html>

@@ -30,7 +30,7 @@ const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const USER_AGENT = 'MarineGlobe3D/2.0 (https://github.com/knoxxr/global-ship-tracker-3d)';
-const MAX_LIVE_VESSELS = 5000;
+const MAX_LIVE_VESSELS = 30000;
 const STALE_VESSEL_MS = 30 * 60 * 1000; // 30 minutes
 
 const MIME_TYPES = {
@@ -53,7 +53,7 @@ export class ShipTrackerServer {
     this.openWatersToken = (options.openWatersToken ?? process.env.OPENWATERS_TOKEN ?? '').trim();
 
     this.provider = this.aisStreamKey ? 'aisstream' : (options.provider || 'openwaters');
-    this.activeZoneId = options.zoneId || 'north-sea';
+    this.activeZoneId = options.zoneId || 'korea-strait';
     this.activeBbox =
       LIVE_ZONES.find((z) => z.id === this.activeZoneId)?.bbox || LIVE_ZONES[0].bbox;
 
