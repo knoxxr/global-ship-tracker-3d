@@ -1,24 +1,37 @@
 /**
- * Global 3D AIS Ship Tracker — Zero-dependency Node.js 22 Server.
+ * MarineGlobe 3D — 100% Live Real-Time AIS Server (Zero Simulation Data).
  *
- * Features:
- *  - Serves the 3D Web Client from ./public
- *  - Live AISStream.io WebSocket connector (uses Node 22 built-in WebSocket)
- *  - Automatic fallback to high-fidelity Global Maritime AIS Simulator
- *  - Real-time Server-Sent Events (SSE) streaming to all connected browsers
- *  - Runtime configuration endpoint to connect/disconnect AISStream API keys
+ * Supported Real-Time Data Sources:
+ *  1. Open Waters AIS (Default — No API key required):
+ *     - Global multi-zone live REST bootstrap (/v1/vessels)
+ *     - Live WebSocket push stream (wss://ais.openwaters.io/v1/stream)
+ *     - On-demand real vessel particulars & 24h AIS track (/v1/vessels/{mmsi})
+ *  2. Fintraffic Digitraffic Marine Open API (No API key required):
+ *     - Official real-time AIS REST feed (/api/ais/v1/locations + /vessels)
+ *  3. AISStream.io (Optional free API key):
+ *     - Global WebSocket push stream (wss://stream.aisstream.io/v0/stream)
  */
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GlobalAisSimulator, MAJOR_PORTS, SHIPPING_CORRIDORS } from './ais-simulator.js';
-import { parseAisStreamMessage } from './ais-parser.js';
+import { LIVE_ZONES } from './live-zones.js';
+import {
+  parseOpenWatersEvent,
+  parseOpenWatersFeature,
+  parseOpenWatersTrack,
+  parseDigitrafficData,
+  parseAisStreamMessage,
+} from './ais-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const USER_AGENT = 'MarineGlobe3D/2.0 (https://github.com/knoxxr/global-ship-tracker-3d)';
+const MAX_LIVE_VESSELS = 5000;
+const STALE_VESSEL_MS = 30 * 60 * 1000; // 30 minutes
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -30,58 +43,55 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
-const MAX_LIVE_VESSELS = 1500;
-const STALE_VESSEL_MS = 15 * 60 * 1000; // 15 minutes
-
 export class ShipTrackerServer {
   constructor(options = {}) {
     this.port = Number(options.port ?? process.env.PORT ?? 3000);
     this.host = options.host ?? process.env.HOST ?? '0.0.0.0';
-    this.apiKey = options.apiKey ?? process.env.AISSTREAM_API_KEY ?? '';
-    this.boundingBoxes = options.boundingBoxes ?? [[[-90, -180], [90, 180]]];
+    this.autoConnect = options.autoConnect ?? true;
 
-    this.mode = this.apiKey ? 'aisstream' : 'simulator';
-    this.connectionState = this.apiKey ? 'connecting' : 'simulated';
+    this.aisStreamKey = (options.aisStreamKey ?? process.env.AISSTREAM_API_KEY ?? '').trim();
+    this.openWatersToken = (options.openWatersToken ?? process.env.OPENWATERS_TOKEN ?? '').trim();
+
+    this.provider = this.aisStreamKey ? 'aisstream' : (options.provider || 'openwaters');
+    this.activeZoneId = options.zoneId || 'north-sea';
+    this.activeBbox =
+      LIVE_ZONES.find((z) => z.id === this.activeZoneId)?.bbox || LIVE_ZONES[0].bbox;
+
+    this.connectionState = 'idle';
     this.lastError = null;
-    this.timeScale = 120; // Default visual speed in simulator mode (120x = ~2 min/sec)
-    this.paused = false;
+    this.lastSyncAt = null;
 
-    this.simulator = new GlobalAisSimulator();
-    this.liveVessels = new Map();
-    this.dirtyLiveIds = new Set();
+    this.vessels = new Map();
+    this.dirtyIds = new Set();
     this.sseClients = new Set();
     this.ws = null;
     this.reconnectTimer = null;
+    this.pollTimer = null;
 
     this.startedAt = Date.now();
     this.msgCounter = 0;
     this.msgPerSec = 0;
 
-    this._simInterval = null;
+    this._flushInterval = null;
     this._statsInterval = null;
-    this._liveFlushInterval = null;
     this.httpServer = null;
   }
 
   getActiveVessels() {
-    if (this.mode === 'aisstream') {
-      return Array.from(this.liveVessels.values());
-    }
-    return this.simulator.getSnapshot();
+    return Array.from(this.vessels.values());
   }
 
   getStatus() {
     return {
-      mode: this.mode,
+      provider: this.provider,
       connectionState: this.connectionState,
-      vesselCount:
-        this.mode === 'aisstream'
-          ? this.liveVessels.size
-          : this.simulator.vessels.length,
+      activeZoneId: this.activeZoneId,
+      activeBbox: this.activeBbox,
+      vesselCount: this.vessels.size,
       msgPerSec: this.msgPerSec,
-      timeScale: this.timeScale,
-      paused: this.paused,
-      hasApiKey: Boolean(this.apiKey),
+      lastSyncAt: this.lastSyncAt,
+      hasOpenWatersToken: Boolean(this.openWatersToken),
+      hasAisStreamKey: Boolean(this.aisStreamKey),
       lastError: this.lastError,
       uptimeSec: Math.floor((Date.now() - this.startedAt) / 1000),
     };
@@ -99,27 +109,239 @@ export class ShipTrackerServer {
     }
   }
 
-  connectAisStream(apiKey, boundingBoxes = [[[-90, -180], [90, 180]]]) {
-    this.disconnectAisStream();
-    this.apiKey = (apiKey || '').trim();
-    this.boundingBoxes = boundingBoxes;
+  _upsertVessel(v) {
+    if (!v || v.lat === null || v.lon === null) return;
+    this.vessels.set(v.mmsi, v);
+    this.dirtyIds.add(v.mmsi);
+    this.msgCounter++;
+    this.lastSyncAt = Date.now();
 
-    if (!this.apiKey) {
-      this.mode = 'simulator';
-      this.connectionState = 'simulated';
-      this.lastError = null;
+    if (this.vessels.size > MAX_LIVE_VESSELS) {
+      const oldestKey = this.vessels.keys().next().value;
+      if (oldestKey) this.vessels.delete(oldestKey);
+    }
+  }
+
+  disconnectFeeds() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      try {
+        old.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  async connectActiveProvider() {
+    this.disconnectFeeds();
+    this.lastError = null;
+    this.connectionState = 'connecting';
+    this.broadcastSse('status', this.getStatus());
+
+    if (this.provider === 'aisstream') {
+      this._connectAisStream();
+    } else if (this.provider === 'digitraffic') {
+      await this._pollDigitraffic();
+      this.pollTimer = setInterval(() => {
+        this._pollDigitraffic().catch(() => {});
+      }, 30000);
+    } else {
+      await this._bootstrapOpenWatersGlobal();
+      this._connectOpenWatersWs(this.activeBbox);
+    }
+  }
+
+  async _fetchOpenWatersBbox(bbox) {
+    const [minLat, minLon, maxLat, maxLon] = bbox;
+    const params = new URLSearchParams({
+      bbox: `${minLat},${minLon},${maxLat},${maxLon}`,
+      max_age: '30m',
+      kind: 'vessel',
+    });
+    const headers = { 'User-Agent': USER_AGENT, Accept: 'application/json' };
+    if (this.openWatersToken) {
+      headers.Authorization = `Bearer ${this.openWatersToken}`;
+    }
+
+    const res = await fetch(`https://ais.openwaters.io/v1/vessels?${params}`, {
+      headers,
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) {
+      throw new Error(`Open Waters REST HTTP ${res.status}`);
+    }
+    const geo = await res.json();
+    const features = Array.isArray(geo.features) ? geo.features : [];
+    let added = 0;
+    for (const f of features) {
+      const existing = this.vessels.get(String(f.properties?.mmsi || f.id || ''));
+      const parsed = parseOpenWatersFeature(f, existing);
+      if (parsed) {
+        this._upsertVessel(parsed);
+        added++;
+      }
+    }
+    return added;
+  }
+
+  async _bootstrapOpenWatersGlobal() {
+    try {
+      let totalLoaded = 0;
+      const results = await Promise.allSettled(
+        LIVE_ZONES.map((z) => this._fetchOpenWatersBbox(z.bbox))
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled') totalLoaded += r.value;
+      }
+      if (totalLoaded > 0) {
+        this.connectionState = 'connected';
+        this.broadcastSse('snapshot', {
+          vessels: this.getActiveVessels(),
+          status: this.getStatus(),
+        });
+      } else {
+        // Fallback automatically to live official Fintraffic Digitraffic if Open Waters returned 0
+        await this._pollDigitraffic();
+      }
+    } catch (err) {
+      this.lastError = `Open Waters 스냅샷 오류: ${err.message}`;
+      this.connectionState = 'error';
       this.broadcastSse('status', this.getStatus());
+    }
+  }
+
+  _connectOpenWatersWs(bbox) {
+    const url = this.openWatersToken
+      ? `wss://ais.openwaters.io/v1/stream?key=${encodeURIComponent(this.openWatersToken)}`
+      : 'wss://ais.openwaters.io/v1/stream';
+
+    try {
+      const ws = new WebSocket(url);
+      this.ws = ws;
+
+      ws.addEventListener('open', () => {
+        if (this.ws !== ws) return;
+        this.connectionState = 'connected';
+        this.lastError = null;
+        ws.send(
+          JSON.stringify({
+            type: 'subscribe',
+            bbox: [bbox],
+            snapshot: true,
+          })
+        );
+        this.broadcastSse('status', this.getStatus());
+      });
+
+      ws.addEventListener('message', (evt) => {
+        if (this.ws !== ws) return;
+        try {
+          const text = typeof evt.data === 'string' ? evt.data : String(evt.data);
+          const data = JSON.parse(text);
+          if (data.type === 'error') {
+            this.lastError = String(data.error || 'Open Waters 구독 오류');
+            this.broadcastSse('status', this.getStatus());
+            return;
+          }
+          if (data.type === 'event') {
+            const existing = this.vessels.get(String(data.mmsi || ''));
+            const parsed = parseOpenWatersEvent(data, existing);
+            if (parsed) this._upsertVessel(parsed);
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      });
+
+      ws.addEventListener('error', () => {
+        if (this.ws !== ws) return;
+        this.lastError = 'Open Waters WebSocket 연결 오류';
+        this.connectionState = 'error';
+        this.broadcastSse('status', this.getStatus());
+      });
+
+      ws.addEventListener('close', () => {
+        if (this.ws !== ws) return;
+        this.ws = null;
+        if (this.provider === 'openwaters') {
+          this.connectionState = 'reconnecting';
+          this.broadcastSse('status', this.getStatus());
+          this.reconnectTimer = setTimeout(() => {
+            if (this.provider === 'openwaters') {
+              this._connectOpenWatersWs(this.activeBbox);
+            }
+          }, 5000);
+        }
+      });
+    } catch (err) {
+      this.lastError = err.message;
+      this.connectionState = 'error';
+      this.broadcastSse('status', this.getStatus());
+    }
+  }
+
+  async _pollDigitraffic() {
+    try {
+      const headers = {
+        'User-Agent': USER_AGENT,
+        'Digitraffic-User': USER_AGENT,
+        Accept: 'application/json',
+      };
+      const [locRes, metaRes] = await Promise.all([
+        fetch('https://meri.digitraffic.fi/api/ais/v1/locations', {
+          headers,
+          signal: AbortSignal.timeout(15000),
+        }),
+        fetch('https://meri.digitraffic.fi/api/ais/v1/vessels', {
+          headers,
+          signal: AbortSignal.timeout(15000),
+        }),
+      ]);
+      if (!locRes.ok) throw new Error(`Digitraffic HTTP ${locRes.status}`);
+      const locJson = await locRes.json();
+      const metaJson = metaRes.ok ? await metaRes.json() : [];
+      const vessels = parseDigitrafficData(locJson, metaJson);
+      for (const v of vessels) {
+        const prev = this.vessels.get(v.mmsi);
+        if (prev && prev.trail.length > 0) {
+          const last = prev.trail[prev.trail.length - 1];
+          v.trail =
+            Math.abs(last[0] - v.lat) + Math.abs(last[1] - v.lon) > 0.002
+              ? [...prev.trail.slice(-39), [v.lat, v.lon]]
+              : prev.trail;
+        }
+        this._upsertVessel(v);
+      }
+      this.connectionState = 'connected';
+      this.lastError = null;
       this.broadcastSse('snapshot', {
         vessels: this.getActiveVessels(),
         status: this.getStatus(),
       });
+    } catch (err) {
+      this.lastError = `Digitraffic 수신 오류: ${err.message}`;
+      this.connectionState = 'error';
+      this.broadcastSse('status', this.getStatus());
+    }
+  }
+
+  _connectAisStream() {
+    if (!this.aisStreamKey) {
+      this.lastError = 'AISStream.io API 키가 필요합니다.';
+      this.connectionState = 'error';
+      this.broadcastSse('status', this.getStatus());
       return;
     }
-
-    this.mode = 'aisstream';
-    this.connectionState = 'connecting';
-    this.lastError = null;
-    this.broadcastSse('status', this.getStatus());
 
     try {
       const ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
@@ -131,8 +353,8 @@ export class ShipTrackerServer {
         this.lastError = null;
         ws.send(
           JSON.stringify({
-            APIKey: this.apiKey,
-            BoundingBoxes: this.boundingBoxes,
+            APIKey: this.aisStreamKey,
+            BoundingBoxes: [[[-90, -180], [90, 180]]],
             FilterMessageTypes: [
               'PositionReport',
               'StandardClassBPositionReport',
@@ -155,29 +377,17 @@ export class ShipTrackerServer {
             this.broadcastSse('status', this.getStatus());
             return;
           }
-          const existing = this.liveVessels.get(
-            String(raw.MetaData?.MMSI || '')
-          );
+          const existing = this.vessels.get(String(raw.MetaData?.MMSI || ''));
           const parsed = parseAisStreamMessage(raw, existing);
-          if (parsed && parsed.lat !== null && parsed.lon !== null) {
-            this.liveVessels.set(parsed.mmsi, parsed);
-            this.dirtyLiveIds.add(parsed.mmsi);
-            this.msgCounter++;
-
-            // Enforce memory cap by evicting oldest entry
-            if (this.liveVessels.size > MAX_LIVE_VESSELS) {
-              const firstKey = this.liveVessels.keys().next().value;
-              if (firstKey) this.liveVessels.delete(firstKey);
-            }
-          }
+          if (parsed) this._upsertVessel(parsed);
         } catch {
-          // Ignore malformed packets
+          // ignore
         }
       });
 
       ws.addEventListener('error', () => {
         if (this.ws !== ws) return;
-        this.lastError = 'AISStream WebSocket 연결 오류 (API 키 또는 네트워크를 확인하세요)';
+        this.lastError = 'AISStream WebSocket 연결 오류';
         this.connectionState = 'error';
         this.broadcastSse('status', this.getStatus());
       });
@@ -185,12 +395,12 @@ export class ShipTrackerServer {
       ws.addEventListener('close', () => {
         if (this.ws !== ws) return;
         this.ws = null;
-        if (this.mode === 'aisstream' && this.apiKey) {
+        if (this.provider === 'aisstream' && this.aisStreamKey) {
           this.connectionState = 'reconnecting';
           this.broadcastSse('status', this.getStatus());
           this.reconnectTimer = setTimeout(() => {
-            if (this.mode === 'aisstream' && this.apiKey) {
-              this.connectAisStream(this.apiKey, this.boundingBoxes);
+            if (this.provider === 'aisstream' && this.aisStreamKey) {
+              this._connectAisStream();
             }
           }, 5000);
         }
@@ -202,60 +412,64 @@ export class ShipTrackerServer {
     }
   }
 
-  disconnectAisStream() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+  async _fetchVesselEnrichment(mmsi) {
+    const clean = String(mmsi || '').replace(/\D/g, '');
+    if (!clean) return null;
+    const headers = { 'User-Agent': USER_AGENT, Accept: 'application/json' };
+    if (this.openWatersToken) headers.Authorization = `Bearer ${this.openWatersToken}`;
+
+    const [detailRes, trackRes] = await Promise.allSettled([
+      fetch(`https://ais.openwaters.io/v1/vessels/${clean}`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
+      }),
+      fetch(`https://ais.openwaters.io/v1/vessels/${clean}/track`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
+      }),
+    ]);
+
+    let vessel = this.vessels.get(clean) || null;
+    if (detailRes.status === 'fulfilled' && detailRes.value.ok) {
+      const feature = await detailRes.value.json();
+      const parsed = parseOpenWatersFeature(feature, vessel);
+      if (parsed) vessel = parsed;
     }
-    if (this.ws) {
-      const old = this.ws;
-      this.ws = null;
-      try {
-        old.close();
-      } catch {
-        // ignore
+    if (trackRes.status === 'fulfilled' && trackRes.value.ok) {
+      const trackGeo = await trackRes.value.json();
+      const trackPts = parseOpenWatersTrack(trackGeo);
+      if (vessel && trackPts.length > 0) {
+        vessel = { ...vessel, trail: trackPts.slice(-120) };
       }
     }
+    if (vessel) {
+      this._upsertVessel(vessel);
+    }
+    return vessel;
   }
 
   _startLoops() {
-    // Advance simulator every 1s and broadcast compact updates
-    this._simInterval = setInterval(() => {
-      if (this.mode === 'simulator' && !this.paused) {
-        this.simulator.step(1.0, this.timeScale);
-        this.msgCounter += this.simulator.vessels.length;
-        if (this.sseClients.size > 0) {
-          this.broadcastSse('batch', {
-            mode: 'simulator',
-            vessels: this.simulator.getSnapshot(),
-          });
-        }
-      }
-    }, 1000);
-
-    // Flush live AIS updates in 500ms batches to avoid overwhelming browsers
-    this._liveFlushInterval = setInterval(() => {
-      if (this.mode === 'aisstream' && this.dirtyLiveIds.size > 0) {
+    this._flushInterval = setInterval(() => {
+      if (this.dirtyIds.size > 0) {
         const updates = [];
-        for (const id of this.dirtyLiveIds) {
-          const v = this.liveVessels.get(id);
+        for (const id of this.dirtyIds) {
+          const v = this.vessels.get(id);
           if (v) updates.push(v);
         }
-        this.dirtyLiveIds.clear();
+        this.dirtyIds.clear();
         if (updates.length > 0 && this.sseClients.size > 0) {
-          this.broadcastSse('delta', { mode: 'aisstream', vessels: updates });
+          this.broadcastSse('delta', { provider: this.provider, vessels: updates });
         }
       }
-      // Prune stale live vessels occasionally
-      if (this.mode === 'aisstream' && this.liveVessels.size > 0) {
+
+      if (this.vessels.size > 0) {
         const cutoff = Date.now() - STALE_VESSEL_MS;
-        for (const [mmsi, v] of this.liveVessels) {
-          if (v.updatedAt < cutoff) this.liveVessels.delete(mmsi);
+        for (const [mmsi, v] of this.vessels) {
+          if (v.updatedAt < cutoff) this.vessels.delete(mmsi);
         }
       }
     }, 500);
 
-    // Calculate packets/sec every 1s
     this._statsInterval = setInterval(() => {
       this.msgPerSec = this.msgCounter;
       this.msgCounter = 0;
@@ -267,7 +481,6 @@ export class ShipTrackerServer {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
 
-    // Enable CORS for /api/* so static frontends (e.g. GitHub Pages) can connect to a deployed backend
     if (pathname.startsWith('/api/')) {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -278,34 +491,24 @@ export class ShipTrackerServer {
       }
     }
 
-    // API endpoints
     if (pathname === '/api/status' && req.method === 'GET') {
       return this._sendJson(res, 200, this.getStatus());
     }
 
-    if (pathname === '/api/metadata' && req.method === 'GET') {
-      return this._sendJson(res, 200, {
-        ports: MAJOR_PORTS,
-        corridors: SHIPPING_CORRIDORS.map((c) => ({
-          id: c.id,
-          name: c.name,
-          origin: c.origin,
-          destination: c.destination,
-          waypoints: c.waypoints,
-        })),
-      });
+    if (pathname === '/api/zones' && req.method === 'GET') {
+      return this._sendJson(res, 200, { zones: LIVE_ZONES });
     }
 
     if (pathname === '/api/vessels' && req.method === 'GET') {
-      let vessels = this.getActiveVessels();
+      let list = this.getActiveVessels();
       const typeFilter = url.searchParams.get('type');
       const query = (url.searchParams.get('q') || '').trim().toLowerCase();
 
       if (typeFilter && typeFilter !== 'all') {
-        vessels = vessels.filter((v) => v.type === typeFilter);
+        list = list.filter((v) => v.type === typeFilter);
       }
       if (query) {
-        vessels = vessels.filter(
+        list = list.filter(
           (v) =>
             v.name.toLowerCase().includes(query) ||
             v.mmsi.includes(query) ||
@@ -315,34 +518,57 @@ export class ShipTrackerServer {
         );
       }
       return this._sendJson(res, 200, {
-        mode: this.mode,
-        count: vessels.length,
-        vessels,
+        provider: this.provider,
+        count: list.length,
+        vessels: list,
       });
+    }
+
+    if (pathname.startsWith('/api/vessel/') && req.method === 'GET') {
+      const mmsi = pathname.slice('/api/vessel/'.length);
+      try {
+        const vessel = await this._fetchVesselEnrichment(mmsi);
+        if (!vessel) return this._sendJson(res, 404, { error: 'Vessel not found' });
+        return this._sendJson(res, 200, { vessel });
+      } catch (err) {
+        return this._sendJson(res, 502, { error: err.message });
+      }
     }
 
     if (pathname === '/api/config' && req.method === 'POST') {
       try {
         const body = await this._readJsonBody(req);
-        if (typeof body.paused === 'boolean') {
-          this.paused = body.paused;
+        if (typeof body.openWatersToken === 'string') {
+          this.openWatersToken = body.openWatersToken.trim();
         }
-        if (Number.isFinite(Number(body.timeScale))) {
-          this.timeScale = Math.max(1, Math.min(3600, Number(body.timeScale)));
+        if (typeof body.aisStreamKey === 'string') {
+          this.aisStreamKey = body.aisStreamKey.trim();
         }
-        if (body.mode === 'simulator') {
-          this.disconnectAisStream();
-          this.apiKey = '';
-          this.mode = 'simulator';
-          this.connectionState = 'simulated';
-          this.lastError = null;
-          this.broadcastSse('snapshot', {
-            vessels: this.getActiveVessels(),
-            status: this.getStatus(),
-          });
-        } else if (body.mode === 'aisstream' && typeof body.apiKey === 'string') {
-          this.liveVessels.clear();
-          this.connectAisStream(body.apiKey, body.boundingBoxes || [[[-90, -180], [90, 180]]]);
+        if (typeof body.zoneId === 'string') {
+          const z = LIVE_ZONES.find((item) => item.id === body.zoneId);
+          if (z) {
+            this.activeZoneId = z.id;
+            this.activeBbox = z.bbox;
+          }
+        }
+        if (Array.isArray(body.bbox) && body.bbox.length === 4) {
+          this.activeZoneId = 'custom';
+          this.activeBbox = body.bbox.map(Number);
+        }
+        if (body.provider && ['openwaters', 'digitraffic', 'aisstream'].includes(body.provider)) {
+          if (body.provider !== this.provider) {
+            this.vessels.clear();
+          }
+          this.provider = body.provider;
+        }
+
+        if (this.autoConnect) {
+          if (this.provider === 'openwaters' && body.bboxOnly) {
+            await this._fetchOpenWatersBbox(this.activeBbox).catch(() => {});
+            this._connectOpenWatersWs(this.activeBbox);
+          } else {
+            await this.connectActiveProvider();
+          }
         }
         this.broadcastSse('status', this.getStatus());
         return this._sendJson(res, 200, { ok: true, status: this.getStatus() });
@@ -361,12 +587,12 @@ export class ShipTrackerServer {
       res.write(': connected\n\n');
       this.sseClients.add(res);
 
-      // Push initial snapshot immediately
-      const initPayload = {
-        vessels: this.getActiveVessels(),
-        status: this.getStatus(),
-      };
-      res.write(`event: snapshot\ndata: ${JSON.stringify(initPayload)}\n\n`);
+      res.write(
+        `event: snapshot\ndata: ${JSON.stringify({
+          vessels: this.getActiveVessels(),
+          status: this.getStatus(),
+        })}\n\n`
+      );
 
       req.on('close', () => {
         this.sseClients.delete(res);
@@ -374,7 +600,6 @@ export class ShipTrackerServer {
       return;
     }
 
-    // Static files from src/public
     return this._serveStatic(pathname, res);
   }
 
@@ -434,8 +659,8 @@ export class ShipTrackerServer {
 
   async start() {
     this._startLoops();
-    if (this.apiKey) {
-      this.connectAisStream(this.apiKey, this.boundingBoxes);
+    if (this.autoConnect) {
+      this.connectActiveProvider().catch(() => {});
     }
     this.httpServer = http.createServer((req, res) => {
       this._handleRequest(req, res).catch((err) => {
@@ -455,10 +680,9 @@ export class ShipTrackerServer {
   }
 
   async stop() {
-    this.disconnectAisStream();
-    clearInterval(this._simInterval);
+    this.disconnectFeeds();
+    clearInterval(this._flushInterval);
     clearInterval(this._statsInterval);
-    clearInterval(this._liveFlushInterval);
     for (const res of this.sseClients) {
       try {
         res.end();
@@ -474,12 +698,11 @@ export class ShipTrackerServer {
   }
 }
 
-// Run directly when executed as main module
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const server = new ShipTrackerServer();
   server.start().then(() => {
     console.log(
-      `[MarineGlobe 3D] Running on http://localhost:${server.port} (mode: ${server.mode})`
+      `[MarineGlobe 3D Live] Running on http://localhost:${server.port} (provider: ${server.provider})`
     );
   });
 }
