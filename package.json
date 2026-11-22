@@ -1,0 +1,15 @@
+{
+  "name": "global-ship-tracker-3d",
+  "version": "1.0.0",
+  "description": "Real-time Global 3D AIS Ship Tracker with live AISStream.io WebSocket support and maritime corridor simulator",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/tracker.test.js",
+    "build:pages": "node scripts/build-pages.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

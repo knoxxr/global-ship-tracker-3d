@@ -1,0 +1,11 @@
+services:
+  marineglobe:
+    build: .
+    container_name: marineglobe-3d
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - AISSTREAM_API_KEY=${AISSTREAM_API_KEY:-}
+    restart: unless-stopped

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: marineglobe-3d
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/status
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: HOST
+        value: "0.0.0.0"
+      - key: AISSTREAM_API_KEY
+        sync: false

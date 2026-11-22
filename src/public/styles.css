@@ -1,0 +1,631 @@
+/* MarineGlobe 3D — Maritime Navigation Console Design System */
+
+:root {
+  --bg: #040b14;
+  --surface: rgba(9, 21, 35, 0.88);
+  --surface-solid: #0a1726;
+  --surface-hover: rgba(20, 42, 66, 0.85);
+  --border: rgba(148, 184, 214, 0.16);
+  --border-strong: rgba(148, 184, 214, 0.28);
+  --text: #e6f0f8;
+  --text-muted: #8ea6bd;
+  --accent: #0ea5e9;
+  --accent-soft: rgba(14, 165, 233, 0.16);
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --radius: 10px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+body.theme-light {
+  --bg: #e8eff5;
+  --surface: rgba(255, 255, 255, 0.9);
+  --surface-solid: #ffffff;
+  --surface-hover: rgba(241, 245, 249, 0.95);
+  --border: rgba(15, 23, 42, 0.12);
+  --border-strong: rgba(15, 23, 42, 0.22);
+  --text: #0f172a;
+  --text-muted: #475569;
+  --accent: #0284c7;
+  --accent-soft: rgba(2, 132, 199, 0.12);
+  --shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Main App Layout */
+.app-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.globe-viewport {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+#globe-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+/* Top Navigation Bar */
+.topbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-strong);
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.brand-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.telemetry-strip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+}
+
+body.theme-light .telemetry-strip {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  display: inline-block;
+  margin-right: 5px;
+}
+
+.status-dot.sim {
+  background: var(--accent);
+}
+
+.status-dot.error {
+  background: var(--danger);
+}
+
+/* Buttons */
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+}
+
+.btn-icon {
+  padding: 5px 8px;
+}
+
+/* Left Sidebar: Vessel Explorer */
+.sidebar {
+  position: absolute;
+  top: 72px;
+  left: 12px;
+  bottom: 12px;
+  width: 312px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+  transition: transform 0.22s ease;
+}
+
+.sidebar.collapsed {
+  transform: translateX(calc(-100% - 20px));
+}
+
+.sidebar-header {
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-box {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+
+body.theme-light .search-box {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.search-box:focus {
+  border-color: var(--accent);
+}
+
+.filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.filter-chip {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.filter-chip.active {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.type-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vessel-list-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.vessel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vessel-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.vessel-item:hover {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+.vessel-item.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.vessel-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.vessel-name {
+  font-weight: 600;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vessel-speed {
+  font-size: 11.5px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.vessel-item-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Right Panel: Selected Vessel Telemetry */
+.inspector {
+  position: absolute;
+  top: 72px;
+  right: 12px;
+  width: 316px;
+  max-height: calc(100vh - 148px);
+  overflow-y: auto;
+  z-index: 16;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inspector.hidden {
+  display: none;
+}
+
+.inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.inspector-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.inspector-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.route-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+body.theme-light .route-banner {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.route-port {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.route-arrow {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.kv-cell {
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+body.theme-light .kv-cell {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.kv-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.kv-value {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.inspector-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.inspector-actions .btn {
+  flex: 1;
+  justify-content: center;
+}
+
+/* Bottom Controls Toolbar */
+.bottom-bar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+  flex-wrap: wrap;
+  max-width: calc(100vw - 24px);
+}
+
+.divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.coord-readout {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  z-index: 14;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  backdrop-filter: blur(10px);
+}
+
+/* Floating Hover Tooltip */
+.hover-tooltip {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  font-size: 11.5px;
+  max-width: 240px;
+  transition: opacity 0.1s ease;
+}
+
+.hover-tooltip.hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(2, 6, 14, 0.65);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.modal-backdrop.hidden {
+  display: none;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 460px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field-group label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Responsive */
+@media (max-width: 960px) {
+  .preset-bar {
+    display: none;
+  }
+  .sidebar {
+    width: 270px;
+  }
+  .coord-readout {
+    display: none;
+  }
+}

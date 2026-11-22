@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MarineGlobe 3D — 전 세계 실시간 선박 위치 추적</title>
+  <meta
+    name="description"
+    content="전 세계 선박의 AIS 위치를 3D 지구본 위에 항로, 속력, 침로, 선종별로 실시간 시각화하는 글로벌 해양 관제 웹 앱"
+  />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <main class="globe-viewport" aria-label="3D 지구본 실시간 선박 지도">
+      <canvas id="globe-canvas"></canvas>
+    </main>
+
+    <header class="topbar">
+      <div class="brand">
+        <button id="btn-toggle-sidebar" class="btn btn-icon" title="선박 목록 열기/닫기" aria-label="선박 목록 토글">☰</button>
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"></path>
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">MarineGlobe 3D</h1>
+          <div class="brand-sub">Global Live AIS Tracker</div>
+        </div>
+      </div>
+
+      <nav id="preset-bar" class="preset-bar" aria-label="주요 해역 카메라 프리셋"></nav>
+
+      <div class="topbar-right">
+        <div class="telemetry-strip mono" id="status-strip">
+          <span><i class="status-dot sim" id="status-dot"></i><strong id="status-mode">SIM</strong></span>
+          <span>선박 <strong id="stat-vessels">0</strong></span>
+          <span id="stat-rate-wrap" style="display:none;">수신 <strong id="stat-rate">0</strong>/s</span>
+        </div>
+        <button id="btn-api-config" class="btn">백엔드 / AIS 연결</button>
+        <button id="btn-theme" class="btn btn-icon" title="라이트/다크 테마 전환">☀</button>
+      </div>
+    </header>
+
+    <aside id="sidebar" class="sidebar" aria-label="선박 검색 및 필터">
+      <div class="sidebar-header">
+        <input
+          id="search-input"
+          class="search-box"
+          type="search"
+          placeholder="선박명, MMSI, IMO, 목적지, 국적 검색..."
+          autocomplete="off"
+        />
+        <div id="filter-grid" class="filter-grid"></div>
+      </div>
+      <div class="vessel-list-meta">
+        <span id="filtered-count">표시 중: 0척</span>
+        <span class="mono" id="utc-clock">--:--:-- UTC</span>
+      </div>
+      <div id="vessel-list" class="vessel-list" role="list"></div>
+    </aside>
+
+    <section id="inspector" class="inspector hidden" aria-label="선택된 선박 상세 정보">
+      <div class="inspector-head">
+        <div>
+          <h2 id="insp-name" class="inspector-title">-</h2>
+          <div id="insp-sub" class="inspector-sub">-</div>
+        </div>
+        <button id="btn-close-inspector" class="btn btn-icon" title="닫기">✕</button>
+      </div>
+
+      <div class="route-banner">
+        <div>
+          <div class="kv-label">출발항</div>
+          <div id="insp-origin" class="route-port mono">-</div>
+        </div>
+        <div class="route-arrow">━━▶</div>
+        <div style="text-align: right;">
+          <div class="kv-label">목적지</div>
+          <div id="insp-dest" class="route-port mono">-</div>
+        </div>
+      </div>
+
+      <div class="kv-grid">
+        <div class="kv-cell">
+          <div class="kv-label">실시간 위도 / 경도</div>
+          <div id="insp-coords" class="kv-value mono">-</div>
+        </div>
+        <div class="kv-cell">
+          <div class="kv-label">속력 (SOG) / 침로 (COG)</div>
+          <div id="insp-nav" class="kv-value mono">-</div>
+        </div>
+        <div class="kv-cell">
+          <div class="kv-label">MMSI / IMO</div>
+          <div id="insp-ids" class="kv-value mono">-</div>
+        </div>
+        <div class="kv-cell">
+          <div class="kv-label">호출부호 / 국적</div>
+          <div id="insp-flag" class="kv-value">-</div>
+        </div>
+        <div class="kv-cell">
+          <div class="kv-label">제원 (전장×선폭) / 흘수</div>
+          <div id="insp-dim" class="kv-value mono">-</div>
+        </div>
+        <div class="kv-cell">
+          <div class="kv-label">항해 상태 / ETA</div>
+          <div id="insp-eta" class="kv-value">-</div>
+        </div>
+      </div>
+
+      <div class="inspector-actions">
+        <button id="btn-follow-vessel" class="btn btn-primary">카메라 추적 잠금</button>
+        <button id="btn-center-vessel" class="btn">위치로 이동</button>
+      </div>
+    </section>
+
+    <div class="bottom-bar" role="toolbar" aria-label="지구본 레이어 및 재생 제어">
+      <button id="btn-zoom-in" class="btn btn-icon" title="확대">+</button>
+      <button id="btn-zoom-out" class="btn btn-icon" title="축소">−</button>
+      <div class="divider"></div>
+      <button id="btn-autorotate" class="btn">자동 회전</button>
+      <button id="btn-daynight" class="btn active">주/야간</button>
+      <button id="btn-lanes" class="btn active">항로</button>
+      <button id="btn-wakes" class="btn active">항적</button>
+      <button id="btn-ports" class="btn active">주요항</button>
+      <div class="divider"></div>
+      <button id="btn-pause" class="btn">일시정지</button>
+      <select id="speed-select" class="btn" aria-label="시뮬레이션 배속">
+        <option value="1">1x 실시간</option>
+        <option value="30">30x</option>
+        <option value="120" selected>120x</option>
+        <option value="360">360x</option>
+      </select>
+    </div>
+
+    <div id="coord-readout" class="coord-readout mono">LAT 24.0°N · LON 122.0°E · 1.1x</div>
+    <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+
+    <!-- Backend / Live AIS Connection Modal -->
+    <div id="api-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-card">
+        <h2 id="modal-title">실시간 AIS 백엔드 연결 설정</h2>
+        <p>
+          현재 GitHub Pages 정적 배포 모드에서는 내장 글로벌 해운 시뮬레이터(336척)가 실시간 실행 중입니다.
+          Render, Fly.io 또는 Docker로 배포한 <strong>MarineGlobe Node.js 백엔드 URL</strong>을 입력하면
+          실제 전 세계 AISStream.io 데이터를 실시간 스트리밍할 수 있습니다.
+        </p>
+        <div class="field-group">
+          <label for="backend-url">MarineGlobe 백엔드 서버 URL (선택)</label>
+          <input
+            id="backend-url"
+            class="search-box mono"
+            type="url"
+            placeholder="예: https://marineglobe-3d.onrender.com"
+          />
+        </div>
+        <div id="modal-error" style="color: var(--danger); font-size: 12px; display: none;"></div>
+        <div class="modal-actions">
+          <button id="btn-switch-sim" class="btn">내장 시뮬레이터 사용</button>
+          <button id="btn-cancel-modal" class="btn">닫기</button>
+          <button id="btn-save-api" class="btn btn-primary">백엔드 연결</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./pages-app.js"></script>
+</body>
+</html>
