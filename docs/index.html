@@ -6,7 +6,7 @@
   <title>MarineGlobe 3D — 전 세계 실시간 선박 위치 추적</title>
   <meta
     name="description"
-    content="전 세계 선박의 AIS 위치를 3D 지구본 위에 항로, 속력, 침로, 선종별로 실시간 시각화하는 글로벌 해양 관제 웹 앱"
+    content="전 세계 모든 선박의 실시간 AIS 위치, 항로, 제원, 기상, 진행률을 3D 지구본과 전체 선박 데이터 표로 시각화하는 글로벌 해양 관제 웹 앱"
   />
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -39,82 +39,44 @@
           <span>선박 <strong id="stat-vessels">0</strong></span>
           <span id="stat-rate-wrap" style="display:none;">수신 <strong id="stat-rate">0</strong>/s</span>
         </div>
-        <button id="btn-api-config" class="btn">백엔드 / AIS 연결</button>
+        <button id="btn-fleet-table" class="btn btn-primary">전체 선박 표</button>
+        <button id="btn-api-config" class="btn">백엔드 연동</button>
         <button id="btn-theme" class="btn btn-icon" title="라이트/다크 테마 전환">☀</button>
       </div>
     </header>
 
-    <aside id="sidebar" class="sidebar" aria-label="선박 검색 및 필터">
+    <aside id="sidebar" class="sidebar" aria-label="선박 검색 및 전체 목록">
       <div class="sidebar-header">
         <input
           id="search-input"
           class="search-box"
           type="search"
-          placeholder="선박명, MMSI, IMO, 목적지, 국적 검색..."
+          placeholder="선박명, 선사, MMSI, IMO, 목적지, 국적 검색..."
           autocomplete="off"
         />
         <div id="filter-grid" class="filter-grid"></div>
       </div>
+      <div id="fleet-summary" class="fleet-summary"></div>
       <div class="vessel-list-meta">
-        <span id="filtered-count">표시 중: 0척</span>
-        <span class="mono" id="utc-clock">--:--:-- UTC</span>
+        <span id="filtered-count">전체 표시: 0척</span>
+        <div class="sidebar-controls">
+          <select id="sort-select" class="sort-select" aria-label="선박 정렬 기준">
+            <option value="speed-desc">속력 높은순</option>
+            <option value="name-asc">선박명순</option>
+            <option value="length-desc">전장 큰순</option>
+            <option value="dwt-desc">톤수(DWT)순</option>
+            <option value="progress-desc">진행률순</option>
+            <option value="type-asc">선종별</option>
+            <option value="dest-asc">목적지순</option>
+          </select>
+          <span class="mono" id="utc-clock">--:--:--</span>
+        </div>
       </div>
       <div id="vessel-list" class="vessel-list" role="list"></div>
     </aside>
 
-    <section id="inspector" class="inspector hidden" aria-label="선택된 선박 상세 정보">
-      <div class="inspector-head">
-        <div>
-          <h2 id="insp-name" class="inspector-title">-</h2>
-          <div id="insp-sub" class="inspector-sub">-</div>
-        </div>
-        <button id="btn-close-inspector" class="btn btn-icon" title="닫기">✕</button>
-      </div>
-
-      <div class="route-banner">
-        <div>
-          <div class="kv-label">출발항</div>
-          <div id="insp-origin" class="route-port mono">-</div>
-        </div>
-        <div class="route-arrow">━━▶</div>
-        <div style="text-align: right;">
-          <div class="kv-label">목적지</div>
-          <div id="insp-dest" class="route-port mono">-</div>
-        </div>
-      </div>
-
-      <div class="kv-grid">
-        <div class="kv-cell">
-          <div class="kv-label">실시간 위도 / 경도</div>
-          <div id="insp-coords" class="kv-value mono">-</div>
-        </div>
-        <div class="kv-cell">
-          <div class="kv-label">속력 (SOG) / 침로 (COG)</div>
-          <div id="insp-nav" class="kv-value mono">-</div>
-        </div>
-        <div class="kv-cell">
-          <div class="kv-label">MMSI / IMO</div>
-          <div id="insp-ids" class="kv-value mono">-</div>
-        </div>
-        <div class="kv-cell">
-          <div class="kv-label">호출부호 / 국적</div>
-          <div id="insp-flag" class="kv-value">-</div>
-        </div>
-        <div class="kv-cell">
-          <div class="kv-label">제원 (전장×선폭) / 흘수</div>
-          <div id="insp-dim" class="kv-value mono">-</div>
-        </div>
-        <div class="kv-cell">
-          <div class="kv-label">항해 상태 / ETA</div>
-          <div id="insp-eta" class="kv-value">-</div>
-        </div>
-      </div>
-
-      <div class="inspector-actions">
-        <button id="btn-follow-vessel" class="btn btn-primary">카메라 추적 잠금</button>
-        <button id="btn-center-vessel" class="btn">위치로 이동</button>
-      </div>
-    </section>
+    <!-- Right Panel: Detailed 5-Section AIS Telemetry Inspector -->
+    <section id="inspector" class="inspector hidden" aria-label="선택된 선박 상세 텔레메트리"></section>
 
     <div class="bottom-bar" role="toolbar" aria-label="지구본 레이어 및 재생 제어">
       <button id="btn-zoom-in" class="btn btn-icon" title="확대">+</button>
@@ -125,6 +87,7 @@
       <button id="btn-lanes" class="btn active">항로</button>
       <button id="btn-wakes" class="btn active">항적</button>
       <button id="btn-ports" class="btn active">주요항</button>
+      <button id="btn-labels" class="btn">선박 라벨</button>
       <div class="divider"></div>
       <button id="btn-pause" class="btn">일시정지</button>
       <select id="speed-select" class="btn" aria-label="시뮬레이션 배속">
@@ -135,15 +98,58 @@
       </select>
     </div>
 
-    <div id="coord-readout" class="coord-readout mono">LAT 24.0°N · LON 122.0°E · 1.1x</div>
+    <div id="coord-readout" class="coord-readout mono">LAT 24.00°N · LON 122.00°E · 1.1x</div>
     <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+
+    <!-- Full-Screen All Vessels Data Table Modal -->
+    <div id="fleet-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="fleet-modal-title">
+      <div class="modal-card fleet-modal-card">
+        <div class="fleet-modal-header">
+          <div>
+            <h2 id="fleet-modal-title">전 세계 선박 전체 텔레메트리 현황</h2>
+            <p id="fleet-modal-sub">현재 필터 조건에 해당하는 모든 선박의 상세 AIS 데이터 (행을 클릭하면 3D 지구본에서 즉시 추적)</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button id="btn-export-csv" class="btn">CSV 내보내기</button>
+            <button id="btn-close-fleet-modal" class="btn btn-primary">닫기</button>
+          </div>
+        </div>
+        <div class="fleet-table-wrap">
+          <table class="fleet-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>선박명</th>
+                <th>선종</th>
+                <th>운항사</th>
+                <th>국적</th>
+                <th>MMSI</th>
+                <th>IMO</th>
+                <th>호출부호</th>
+                <th>위도</th>
+                <th>경도</th>
+                <th>속력</th>
+                <th>침로</th>
+                <th>출발 → 목적지</th>
+                <th>진행률</th>
+                <th>잔여거리</th>
+                <th>전장×선폭 / 흘수</th>
+                <th>적재 용량</th>
+                <th>ETA</th>
+              </tr>
+            </thead>
+            <tbody id="fleet-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 
     <!-- Backend / Live AIS Connection Modal -->
     <div id="api-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal-card">
         <h2 id="modal-title">실시간 AIS 백엔드 연결 설정</h2>
         <p>
-          현재 GitHub Pages 정적 배포 모드에서는 내장 글로벌 해운 시뮬레이터(336척)가 실시간 실행 중입니다.
+          현재 GitHub Pages 정적 배포 모드에서는 내장 글로벌 해운 시뮬레이터(336척 전체 상세 텔레메트리)가 실시간 실행 중입니다.
           Render, Fly.io 또는 Docker로 배포한 <strong>MarineGlobe Node.js 백엔드 URL</strong>을 입력하면
           실제 전 세계 AISStream.io 데이터를 실시간 스트리밍할 수 있습니다.
         </p>

@@ -396,8 +396,8 @@ body.theme-light .search-box {
   position: absolute;
   top: 72px;
   right: 12px;
-  width: 316px;
-  max-height: calc(100vh - 148px);
+  width: 368px;
+  max-height: calc(100vh - 144px);
   overflow-y: auto;
   z-index: 16;
   background: var(--surface);
@@ -408,7 +408,7 @@ body.theme-light .search-box {
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 11px;
 }
 
 .inspector.hidden {
@@ -436,11 +436,40 @@ body.theme-light .search-box {
   margin-top: 2px;
 }
 
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.mini-badge {
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.16);
+  color: var(--text-muted);
+}
+
+body.theme-light .mini-badge {
+  background: rgba(15, 23, 42, 0.05);
+}
+
+.section-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: -5px;
+}
+
 .route-banner {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
   border-radius: 7px;
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.16);
@@ -450,20 +479,55 @@ body.theme-light .route-banner {
   background: rgba(15, 23, 42, 0.04);
 }
 
+.route-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .route-port {
   font-weight: 700;
   font-size: 13px;
 }
 
+.route-port-name {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
 .route-arrow {
   color: var(--accent);
   font-size: 12px;
+  flex-shrink: 0;
+}
+
+.progress-track {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 184, 214, 0.18);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.route-metrics {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--text-muted);
 }
 
 .kv-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 7px;
 }
 
 .kv-cell {
@@ -471,6 +535,10 @@ body.theme-light .route-banner {
   border-radius: 7px;
   border: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.12);
+}
+
+.kv-cell.full {
+  grid-column: 1 / -1;
 }
 
 body.theme-light .kv-cell {
@@ -484,8 +552,33 @@ body.theme-light .kv-cell {
 }
 
 .kv-value {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
+  word-break: break-word;
+}
+
+.kv-sub {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.trail-log {
+  max-height: 92px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.12);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+body.theme-light .trail-log {
+  background: rgba(15, 23, 42, 0.03);
 }
 
 .inspector-actions {
@@ -496,6 +589,71 @@ body.theme-light .kv-cell {
 .inspector-actions .btn {
   flex: 1;
   justify-content: center;
+}
+
+/* Sidebar Enhancements */
+.sidebar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.sort-select {
+  padding: 3px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.fleet-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px;
+}
+
+.fleet-stat {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid var(--border);
+}
+
+body.theme-light .fleet-stat {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.fleet-stat span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.fleet-stat strong {
+  font-size: 11.5px;
+  margin-top: 1px;
+}
+
+.mini-progress {
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(148, 184, 214, 0.15);
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.mini-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
 }
 
 /* Bottom Controls Toolbar */
@@ -544,13 +702,13 @@ body.theme-light .kv-cell {
   position: absolute;
   z-index: 30;
   pointer-events: none;
-  padding: 7px 10px;
-  border-radius: 7px;
+  padding: 9px 11px;
+  border-radius: 8px;
   background: var(--surface-solid);
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow);
   font-size: 11.5px;
-  max-width: 240px;
+  max-width: 280px;
   transition: opacity 0.1s ease;
 }
 
@@ -564,7 +722,7 @@ body.theme-light .kv-cell {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(2, 6, 14, 0.65);
+  background: rgba(2, 6, 14, 0.68);
   backdrop-filter: blur(4px);
   display: grid;
   place-items: center;
@@ -617,13 +775,84 @@ body.theme-light .kv-cell {
   margin-top: 4px;
 }
 
+/* Full Fleet Data Table Modal */
+.fleet-modal-card {
+  width: min(1360px, 96vw);
+  height: min(86vh, 840px);
+  max-width: none;
+  padding: 16px;
+  gap: 10px;
+}
+
+.fleet-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fleet-table-wrap {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.fleet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.fleet-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-solid);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-strong);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fleet-table thead th:hover {
+  color: var(--text);
+}
+
+.fleet-table tbody tr {
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.fleet-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.fleet-table tbody tr.selected {
+  background: var(--accent-soft);
+}
+
+.fleet-table td {
+  padding: 6px 10px;
+}
+
 /* Responsive */
 @media (max-width: 960px) {
   .preset-bar {
     display: none;
   }
   .sidebar {
-    width: 270px;
+    width: 280px;
+  }
+  .inspector {
+    width: calc(100vw - 24px);
+    max-width: 360px;
   }
   .coord-readout {
     display: none;

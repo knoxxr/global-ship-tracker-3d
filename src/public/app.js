@@ -1,11 +1,21 @@
 /**
- * MarineGlobe 3D — Client Controller
+ * MarineGlobe 3D — Client Controller (Node.js SSE Backend Mode)
  * Streams real-time AIS snapshots/deltas over Server-Sent Events (/api/stream),
- * drives the 3D GlobeEngine, and manages search, filters, telemetry, and live config.
+ * displays ALL tracked vessels with detailed 5-section telemetry & full fleet table.
  */
 
 import { GlobeEngine } from './globe-engine.js';
 import { VESSEL_TYPES, CAMERA_PRESETS } from './world-data.js';
+import {
+  formatCoordShort,
+  sortVessels,
+  renderHoverTooltipHtml,
+  renderFleetSummaryHtml,
+  renderAllVesselListHtml,
+  renderInspectorBodyHtml,
+  renderFleetTableRowsHtml,
+  exportVesselsCsv,
+} from './telemetry-ui.js';
 
 const REGION_BBOXES = {
   global: [[[-90, -180], [90, 180]]],
@@ -23,7 +33,9 @@ const state = {
   followSelected: false,
   activeType: 'all',
   searchQuery: '',
+  sortBy: 'speed-desc',
   theme: 'dark',
+  fleetModalOpen: false,
   status: {
     mode: 'simulator',
     connectionState: 'simulated',
@@ -34,7 +46,6 @@ const state = {
   },
 };
 
-// DOM References
 const dom = {
   canvas: document.getElementById('globe-canvas'),
   presetBar: document.getElementById('preset-bar'),
@@ -42,7 +53,9 @@ const dom = {
   btnToggleSidebar: document.getElementById('btn-toggle-sidebar'),
   searchInput: document.getElementById('search-input'),
   filterGrid: document.getElementById('filter-grid'),
+  fleetSummary: document.getElementById('fleet-summary'),
   filteredCount: document.getElementById('filtered-count'),
+  sortSelect: document.getElementById('sort-select'),
   utcClock: document.getElementById('utc-clock'),
   vesselList: document.getElementById('vessel-list'),
   statusDot: document.getElementById('status-dot'),
@@ -50,19 +63,6 @@ const dom = {
   statVessels: document.getElementById('stat-vessels'),
   statRate: document.getElementById('stat-rate'),
   inspector: document.getElementById('inspector'),
-  inspName: document.getElementById('insp-name'),
-  inspSub: document.getElementById('insp-sub'),
-  inspOrigin: document.getElementById('insp-origin'),
-  inspDest: document.getElementById('insp-dest'),
-  inspCoords: document.getElementById('insp-coords'),
-  inspNav: document.getElementById('insp-nav'),
-  inspIds: document.getElementById('insp-ids'),
-  inspFlag: document.getElementById('insp-flag'),
-  inspDim: document.getElementById('insp-dim'),
-  inspEta: document.getElementById('insp-eta'),
-  btnCloseInspector: document.getElementById('btn-close-inspector'),
-  btnFollowVessel: document.getElementById('btn-follow-vessel'),
-  btnCenterVessel: document.getElementById('btn-center-vessel'),
   btnZoomIn: document.getElementById('btn-zoom-in'),
   btnZoomOut: document.getElementById('btn-zoom-out'),
   btnAutoRotate: document.getElementById('btn-autorotate'),
@@ -70,11 +70,18 @@ const dom = {
   btnLanes: document.getElementById('btn-lanes'),
   btnWakes: document.getElementById('btn-wakes'),
   btnPorts: document.getElementById('btn-ports'),
+  btnLabels: document.getElementById('btn-labels'),
   btnPause: document.getElementById('btn-pause'),
   speedSelect: document.getElementById('speed-select'),
   coordReadout: document.getElementById('coord-readout'),
   hoverTooltip: document.getElementById('hover-tooltip'),
   btnTheme: document.getElementById('btn-theme'),
+  btnFleetTable: document.getElementById('btn-fleet-table'),
+  fleetModal: document.getElementById('fleet-modal'),
+  fleetModalSub: document.getElementById('fleet-modal-sub'),
+  fleetTableBody: document.getElementById('fleet-table-body'),
+  btnExportCsv: document.getElementById('btn-export-csv'),
+  btnCloseFleetModal: document.getElementById('btn-close-fleet-modal'),
   btnApiConfig: document.getElementById('btn-api-config'),
   apiModal: document.getElementById('api-modal'),
   aisApiKey: document.getElementById('ais-api-key'),
@@ -85,12 +92,6 @@ const dom = {
   btnSaveApi: document.getElementById('btn-save-api'),
 };
 
-function formatCoordShort(val, isLat) {
-  const hemi = isLat ? (val >= 0 ? 'N' : 'S') : (val >= 0 ? 'E' : 'W');
-  return `${Math.abs(val).toFixed(2)}°${hemi}`;
-}
-
-// Initialize 3D Globe Engine
 const globe = new GlobeEngine(dom.canvas, {
   initialLat: 24,
   initialLon: 122,
@@ -102,20 +103,8 @@ const globe = new GlobeEngine(dom.canvas, {
       dom.hoverTooltip.classList.add('hidden');
       return;
     }
-    const meta = VESSEL_TYPES[vessel.type] || VESSEL_TYPES.bulk;
-    dom.hoverTooltip.innerHTML = `
-      <div style="display:flex;align-items:center;gap:6px;font-weight:700;">
-        <span class="type-dot" style="background:${meta.color}"></span>
-        <span>${escapeHtml(vessel.name)}</span>
-      </div>
-      <div style="color:var(--text-muted);margin-top:2px;">
-        ${meta.label} · ${escapeHtml(vessel.flagName || vessel.flagCode)}
-      </div>
-      <div class="mono" style="margin-top:3px;">
-        ${vessel.sog} kn · ${vessel.cog}° · ${escapeHtml(vessel.destination || '-')}
-      </div>
-    `;
-    dom.hoverTooltip.style.left = `${Math.min(window.innerWidth - 250, mx + 14)}px`;
+    dom.hoverTooltip.innerHTML = renderHoverTooltipHtml(vessel);
+    dom.hoverTooltip.style.left = `${Math.min(window.innerWidth - 290, mx + 14)}px`;
     dom.hoverTooltip.style.top = `${Math.max(70, my - 12)}px`;
     dom.hoverTooltip.classList.remove('hidden');
   },
@@ -124,15 +113,6 @@ const globe = new GlobeEngine(dom.canvas, {
   },
 });
 
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-}
-
-// Render Camera Presets
 function renderPresets() {
   dom.presetBar.innerHTML = CAMERA_PRESETS.map(
     (p) => `<button class="btn" data-preset="${p.id}">${p.label}</button>`
@@ -144,12 +124,11 @@ function renderPresets() {
     if (!preset) return;
     state.followSelected = false;
     globe.setSelectedVessel(state.selectedMmsi, false);
-    updateFollowButton();
+    renderInspector();
     globe.flyTo(preset.lat, preset.lon, preset.zoom, 800);
   });
 }
 
-// Render Vessel Type Filter Chips
 function renderFilterChips() {
   const counts = { all: state.allVessels.length };
   for (const key of Object.keys(VESSEL_TYPES)) counts[key] = 0;
@@ -181,58 +160,40 @@ dom.searchInput.addEventListener('input', (e) => {
   applyFiltersAndRender();
 });
 
+dom.sortSelect.addEventListener('change', (e) => {
+  state.sortBy = e.target.value;
+  applyFiltersAndRender();
+});
+
 function applyFiltersAndRender() {
   const q = state.searchQuery;
-  state.filteredVessels = state.allVessels.filter((v) => {
+  const matched = state.allVessels.filter((v) => {
     if (state.activeType !== 'all' && v.type !== state.activeType) return false;
     if (!q) return true;
     return (
       v.name.toLowerCase().includes(q) ||
       v.mmsi.includes(q) ||
       (v.imo && v.imo.includes(q)) ||
+      (v.operator && v.operator.toLowerCase().includes(q)) ||
       (v.destination && v.destination.toLowerCase().includes(q)) ||
+      (v.destinationName && v.destinationName.toLowerCase().includes(q)) ||
       (v.origin && v.origin.toLowerCase().includes(q)) ||
-      (v.flagName && v.flagName.toLowerCase().includes(q))
+      (v.flagName && v.flagName.toLowerCase().includes(q)) ||
+      (v.callsign && v.callsign.toLowerCase().includes(q))
     );
   });
 
+  state.filteredVessels = sortVessels(matched, state.sortBy);
   globe.setVessels(state.filteredVessels);
+
+  dom.btnFleetTable.textContent = `전체 선박 표 (${state.filteredVessels.length})`;
+  dom.fleetSummary.innerHTML = renderFleetSummaryHtml(state.filteredVessels);
+  dom.filteredCount.textContent = `전체 표시: ${state.filteredVessels.length}척`;
+
   renderFilterChips();
-  renderVesselList();
+  dom.vesselList.innerHTML = renderAllVesselListHtml(state.filteredVessels, state.selectedMmsi);
   renderInspector();
-}
-
-function renderVesselList() {
-  dom.filteredCount.textContent = `표시 중: ${state.filteredVessels.length}척`;
-  const maxShow = 90;
-  const slice = state.filteredVessels.slice(0, maxShow);
-
-  if (slice.length === 0) {
-    dom.vesselList.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);">조건에 일치하는 선박이 없습니다.</div>`;
-    return;
-  }
-
-  dom.vesselList.innerHTML = slice
-    .map((v) => {
-      const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
-      const sel = v.mmsi === state.selectedMmsi ? 'selected' : '';
-      return `
-        <button class="vessel-item ${sel}" data-mmsi="${v.mmsi}" role="listitem">
-          <div class="vessel-item-top">
-            <span class="vessel-name">
-              <span class="type-dot" style="background:${meta.color}"></span>
-              ${escapeHtml(v.name)}
-            </span>
-            <span class="vessel-speed mono">${v.sog} kn</span>
-          </div>
-          <div class="vessel-item-sub">
-            <span>${meta.short} · ${escapeHtml(v.flagName || v.flagCode)}</span>
-            <span class="mono">${escapeHtml(v.origin || 'AIS')} → ${escapeHtml(v.destination || '-')}</span>
-          </div>
-        </button>
-      `;
-    })
-    .join('');
+  if (state.fleetModalOpen) renderFleetTable();
 }
 
 dom.vesselList.addEventListener('click', (e) => {
@@ -250,8 +211,9 @@ function selectVessel(mmsi, fly = false) {
   if (fly) {
     globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 2.8), 700);
   }
-  renderVesselList();
+  dom.vesselList.innerHTML = renderAllVesselListHtml(state.filteredVessels, state.selectedMmsi);
   renderInspector();
+  if (state.fleetModalOpen) renderFleetTable();
 }
 
 function renderInspector() {
@@ -264,57 +226,66 @@ function renderInspector() {
     dom.inspector.classList.add('hidden');
     return;
   }
-  const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
+  const prevScroll = dom.inspector.scrollTop;
   dom.inspector.classList.remove('hidden');
-  dom.inspName.textContent = v.name;
-  dom.inspSub.innerHTML = `<span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:5px;"></span>${meta.label} · ${escapeHtml(v.corridorName || (v.source === 'aisstream' ? 'AISStream 실시간 수신' : '글로벌 항로'))}`;
-  dom.inspOrigin.textContent = v.origin || 'LIVE';
-  dom.inspDest.textContent = v.destination || '미지정';
-  dom.inspCoords.textContent = `${formatCoordShort(v.lat, true)}, ${formatCoordShort(v.lon, false)}`;
-  dom.inspNav.textContent = `${v.sog} kn / ${v.cog}° (HDG ${v.heading}°)`;
-  dom.inspIds.textContent = `${v.mmsi} / ${v.imo || '-'}`;
-  dom.inspFlag.textContent = `${v.callsign || '-'} · ${v.flagName || v.flagCode}`;
-  dom.inspDim.textContent =
-    v.length && v.beam
-      ? `${v.length}m × ${v.beam}m / ${v.draught ?? '-'}m`
-      : `흘수 ${v.draught ?? '-'}m`;
-  dom.inspEta.textContent = `${v.navStatus || '항해 중'} · ${v.eta || '-'}`;
-  updateFollowButton();
+  dom.inspector.innerHTML = renderInspectorBodyHtml(v, state.followSelected);
+  dom.inspector.scrollTop = prevScroll;
 }
 
-function updateFollowButton() {
-  dom.btnFollowVessel.textContent = state.followSelected
-    ? '추적 잠금 해제'
-    : '카메라 추적 잠금';
-  dom.btnFollowVessel.classList.toggle('active', state.followSelected);
+// Delegated Inspector Actions (preserved across live updates)
+dom.inspector.addEventListener('click', (e) => {
+  if (e.target.closest('#btn-close-inspector')) {
+    state.selectedMmsi = null;
+    state.followSelected = false;
+    globe.setSelectedVessel(null, false);
+    dom.inspector.classList.add('hidden');
+    dom.vesselList.innerHTML = renderAllVesselListHtml(state.filteredVessels, null);
+    return;
+  }
+  if (e.target.closest('#btn-follow-vessel')) {
+    if (!state.selectedMmsi) return;
+    state.followSelected = !state.followSelected;
+    globe.setSelectedVessel(state.selectedMmsi, state.followSelected);
+    renderInspector();
+    return;
+  }
+  if (e.target.closest('#btn-center-vessel')) {
+    const v = state.vesselsMap.get(state.selectedMmsi);
+    if (v) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 3.6), 600);
+  }
+});
+
+// Full Fleet Table Modal
+function renderFleetTable() {
+  dom.fleetModalSub.textContent = `총 ${state.filteredVessels.length}척 전체 표시 중 · 행을 클릭하면 3D 지구본에서 즉시 해당 선박으로 이동합니다.`;
+  dom.fleetTableBody.innerHTML = renderFleetTableRowsHtml(state.filteredVessels, state.selectedMmsi);
 }
 
-// Inspector Controls
-dom.btnCloseInspector.addEventListener('click', () => {
-  state.selectedMmsi = null;
-  state.followSelected = false;
-  globe.setSelectedVessel(null, false);
-  renderVesselList();
-  renderInspector();
+dom.btnFleetTable.addEventListener('click', () => {
+  state.fleetModalOpen = true;
+  renderFleetTable();
+  dom.fleetModal.classList.remove('hidden');
 });
 
-dom.btnFollowVessel.addEventListener('click', () => {
-  if (!state.selectedMmsi) return;
-  state.followSelected = !state.followSelected;
-  globe.setSelectedVessel(state.selectedMmsi, state.followSelected);
-  updateFollowButton();
+dom.btnCloseFleetModal.addEventListener('click', () => {
+  state.fleetModalOpen = false;
+  dom.fleetModal.classList.add('hidden');
 });
 
-dom.btnCenterVessel.addEventListener('click', () => {
-  const v = state.vesselsMap.get(state.selectedMmsi);
-  if (v) globe.flyTo(v.lat, v.lon, Math.max(globe.zoom, 3.4), 600);
+dom.btnExportCsv.addEventListener('click', () => {
+  exportVesselsCsv(state.filteredVessels);
+});
+
+dom.fleetTableBody.addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-mmsi]');
+  if (!row) return;
+  state.fleetModalOpen = false;
+  dom.fleetModal.classList.add('hidden');
+  selectVessel(row.dataset.mmsi, true);
 });
 
 // Toolbar Controls
-dom.btnToggleSidebar.addEventListener('click', () => {
-  dom.sidebar.classList.toggle('collapsed');
-});
-
+dom.btnToggleSidebar.addEventListener('click', () => dom.sidebar.classList.toggle('collapsed'));
 dom.btnZoomIn.addEventListener('click', () => globe.zoomBy(1.35));
 dom.btnZoomOut.addEventListener('click', () => globe.zoomBy(0.74));
 
@@ -331,6 +302,7 @@ bindToggle(dom.btnDayNight, 'showDayNight');
 bindToggle(dom.btnLanes, 'showLanes');
 bindToggle(dom.btnWakes, 'showWakes');
 bindToggle(dom.btnPorts, 'showPorts');
+bindToggle(dom.btnLabels, 'showLabels');
 
 dom.btnTheme.addEventListener('click', () => {
   state.theme = state.theme === 'dark' ? 'light' : 'dark';
@@ -340,8 +312,7 @@ dom.btnTheme.addEventListener('click', () => {
 });
 
 dom.btnPause.addEventListener('click', async () => {
-  const nextPaused = !state.status.paused;
-  await postConfig({ paused: nextPaused });
+  await postConfig({ paused: !state.status.paused });
 });
 
 dom.speedSelect.addEventListener('change', async (e) => {
@@ -353,16 +324,11 @@ dom.btnApiConfig.addEventListener('click', () => {
   dom.modalError.style.display = 'none';
   dom.apiModal.classList.remove('hidden');
 });
-
-dom.btnCancelModal.addEventListener('click', () => {
-  dom.apiModal.classList.add('hidden');
-});
-
+dom.btnCancelModal.addEventListener('click', () => dom.apiModal.classList.add('hidden'));
 dom.btnSwitchSim.addEventListener('click', async () => {
   await postConfig({ mode: 'simulator' });
   dom.apiModal.classList.add('hidden');
 });
-
 dom.btnSaveApi.addEventListener('click', async () => {
   const key = dom.aisApiKey.value.trim();
   if (!key) {
@@ -420,51 +386,38 @@ function updateStatusUI(status) {
 }
 
 function ingestVessels(vessels, replaceAll = false) {
-  if (replaceAll) {
-    state.vesselsMap.clear();
-  }
-  for (const v of vessels) {
-    state.vesselsMap.set(v.mmsi, v);
-  }
+  if (replaceAll) state.vesselsMap.clear();
+  for (const v of vessels) state.vesselsMap.set(v.mmsi, v);
   state.allVessels = Array.from(state.vesselsMap.values());
   applyFiltersAndRender();
 }
 
-// Connect Server-Sent Events Stream
 function connectStream() {
   const es = new EventSource('/api/stream');
-
   es.addEventListener('snapshot', (e) => {
     const data = JSON.parse(e.data);
     if (data.status) updateStatusUI(data.status);
     ingestVessels(data.vessels || [], true);
   });
-
   es.addEventListener('batch', (e) => {
     const data = JSON.parse(e.data);
     ingestVessels(data.vessels || [], true);
   });
-
   es.addEventListener('delta', (e) => {
     const data = JSON.parse(e.data);
     ingestVessels(data.vessels || [], false);
   });
-
   es.addEventListener('status', (e) => {
-    const status = JSON.parse(e.data);
-    updateStatusUI(status);
+    updateStatusUI(JSON.parse(e.data));
   });
-
   es.onerror = () => {
     dom.statusDot.classList.add('error');
     dom.statusMode.textContent = '재연결 중';
   };
 }
 
-// Live UTC Clock
 function tickClock() {
-  const now = new Date();
-  dom.utcClock.textContent = `${now.toISOString().slice(11, 19)} UTC`;
+  dom.utcClock.textContent = `${new Date().toISOString().slice(11, 19)}`;
 }
 
 renderPresets();

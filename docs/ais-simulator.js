@@ -1,13 +1,12 @@
 /**
  * High-fidelity Global Maritime AIS Simulator.
- * Generates 320+ realistic vessels steaming along authentic international
- * sea lanes (Trans-Pacific, Asia-Europe via Suez, Trans-Atlantic, Panama Canal,
- * Persian Gulf oil routes, Cape of Good Hope, East Asia coastal, North Sea/Med).
- * Positions advance continuously via great-circle SLERP kinematics.
+ * Generates 336 realistic vessels steaming along 12 authentic international
+ * sea lanes with detailed vessel specifications, voyage progress, weather,
+ * fuel consumption estimates, and great-circle SLERP kinematics.
  */
 
-import { haversineNm, initialBearing, slerpLatLon } from './geo-math.js';
-import { flagFromMmsi } from './ais-parser.js';
+import { haversineNm, initialBearing, slerpLatLon, compassDirection } from './geo-math.js';
+import { flagFromMmsi, describeAisShipType } from './ais-parser.js';
 
 export const MAJOR_PORTS = [
   { code: 'KRPUS', name: '부산항 (Busan)', lat: 35.10, lon: 129.04 },
@@ -29,9 +28,8 @@ export const MAJOR_PORTS = [
   { code: 'AUSYD', name: '시드니항 (Sydney)', lat: -33.85, lon: 151.21 },
 ];
 
-/**
- * Verified ocean-only waypoints [lat, lon] along global shipping corridors.
- */
+const PORT_NAME_BY_CODE = Object.fromEntries(MAJOR_PORTS.map((p) => [p.code, p.name]));
+
 export const SHIPPING_CORRIDORS = [
   {
     id: 'pacific-north',
@@ -213,6 +211,48 @@ const VESSEL_PREFIXES = {
   ],
 };
 
+const OPERATOR_BY_PREFIX = {
+  HMM: 'HMM Co., Ltd. (대한민국)',
+  MAERSK: 'A.P. Moller-Maersk (덴마크)',
+  MSC: 'Mediterranean Shipping Co. (스위스)',
+  'CMA CGM': 'CMA CGM Group (프랑스)',
+  EVER: 'Evergreen Marine (대만)',
+  COSCO: 'COSCO Shipping Lines (중국)',
+  ONE: 'Ocean Network Express (싱가포르)',
+  HAPAG: 'Hapag-Lloyd AG (독일)',
+  'YANG MING': 'Yang Ming Marine (대만)',
+  ZIM: 'ZIM Integrated Shipping',
+  'KOREA GAS': '한국가스공사 / SK해운',
+  'HYUNDAI LNG': '현대LNG해운 (대한민국)',
+  FRONT: 'Frontline plc (노르웨이)',
+  STENA: 'Stena Bulk AB (스웨덴)',
+  SHELL: 'Shell International Trading',
+  'PAN OCEAN': '팬오션 (대한민국)',
+  BERGE: 'Berge Bulk Maritime (싱가포르)',
+  OLDENDORFF: 'Oldendorff Carriers (독일)',
+  SYMPHONY: 'Royal Caribbean International',
+  QUANTUM: 'Royal Caribbean International',
+  NORWEGIAN: 'Norwegian Cruise Line',
+  PRINCESS: 'Princess Cruises',
+  VIKING: 'Viking Ocean Cruises',
+  DONGWON: '동원산업 (대한민국)',
+  SAJO: '사조산업 (대한민국)',
+  HAEUNDONG: '해운수산 원양선단',
+  ISABU: '한국해양과학기술원 (KIOST)',
+  ARAON: '극지연구소 (KOPRI)',
+};
+
+const SHIPYARDS = [
+  'HD현대중공업 (울산)',
+  '한화오션 (거제)',
+  '삼성중공업 (거제)',
+  'Imabari Shipbuilding (일본)',
+  'CSSC Jiangnan Shipyard (중국)',
+  'Meyer Werft (독일)',
+  'Fincantieri (이탈리아)',
+  'HJ중공업 (부산)',
+];
+
 const VESSEL_SUFFIXES = [
   'ALGECIRAS', 'SEOUL', 'BUSAN', 'OSLO', 'ROTTERDAM', 'SINGAPORE', 'VANGUARD',
   'HORIZON', 'ENTERPRISE', 'APEX', 'LEGACY', 'SPIRIT', 'TRIUMPH', 'VOYAGER',
@@ -222,17 +262,65 @@ const VESSEL_SUFFIXES = [
 ];
 
 const TYPE_SPECS = {
-  container: { aisCode: 71, speedRange: [16.5, 23.0], lenRange: [260, 400], beamRange: [38, 61], draughtRange: [11.5, 16.0] },
-  tanker:    { aisCode: 80, speedRange: [11.5, 16.5], lenRange: [220, 333], beamRange: [40, 60], draughtRange: [11.0, 21.0] },
-  bulk:      { aisCode: 70, speedRange: [11.0, 14.8], lenRange: [180, 300], beamRange: [30, 48], draughtRange: [9.5, 18.0] },
-  passenger: { aisCode: 60, speedRange: [17.0, 22.5], lenRange: [210, 362], beamRange: [32, 48], draughtRange: [7.5, 9.5] },
-  fishing:   { aisCode: 30, speedRange: [6.0, 11.5],  lenRange: [38, 95],   beamRange: [9, 18],  draughtRange: [3.5, 6.5] },
-  special:   { aisCode: 52, speedRange: [9.0, 15.5],  lenRange: [65, 145],  beamRange: [14, 26], draughtRange: [4.5, 8.5] },
+  container: {
+    aisCode: 71,
+    speedRange: [16.5, 23.0],
+    lenRange: [260, 400],
+    beamRange: [38, 61],
+    draughtRange: [11.5, 16.0],
+    dwtRange: [110000, 235000],
+    baseFuel: 135,
+  },
+  tanker: {
+    aisCode: 84,
+    speedRange: [11.5, 16.5],
+    lenRange: [220, 333],
+    beamRange: [40, 60],
+    draughtRange: [11.0, 21.0],
+    dwtRange: [95000, 315000],
+    baseFuel: 78,
+  },
+  bulk: {
+    aisCode: 70,
+    speedRange: [11.0, 14.8],
+    lenRange: [180, 300],
+    beamRange: [30, 48],
+    draughtRange: [9.5, 18.0],
+    dwtRange: [58000, 210000],
+    baseFuel: 48,
+  },
+  passenger: {
+    aisCode: 60,
+    speedRange: [17.0, 22.5],
+    lenRange: [210, 362],
+    beamRange: [32, 48],
+    draughtRange: [7.5, 9.5],
+    dwtRange: [12000, 26000],
+    baseFuel: 110,
+  },
+  fishing: {
+    aisCode: 30,
+    speedRange: [6.0, 11.5],
+    lenRange: [38, 95],
+    beamRange: [9, 18],
+    draughtRange: [3.5, 6.5],
+    dwtRange: [650, 3800],
+    baseFuel: 8.5,
+  },
+  special: {
+    aisCode: 52,
+    speedRange: [9.0, 15.5],
+    lenRange: [65, 145],
+    beamRange: [14, 26],
+    draughtRange: [4.5, 8.5],
+    dwtRange: [2200, 14500],
+    baseFuel: 18,
+  },
 };
 
 const FLAG_MIDS = ['440', '441', '563', '351', '636', '538', '412', '431', '219', '211', '235', '366', '257', '244', '226', '247', '477', '416'];
+const CARGO_STATES = ['만재 (Laden)', '만재 (Laden)', '부분 적재 (Partial)', '밸러스트 (Ballast)'];
 
-// Deterministic PRNG (Mulberry32) so tests and initial distribution are clean & reproducible
 function createRng(seed = 20261121) {
   let a = seed >>> 0;
   return function next() {
@@ -244,9 +332,6 @@ function createRng(seed = 20261121) {
   };
 }
 
-/**
- * Precompute cumulative distances for a corridor's waypoint polyline.
- */
 function buildRouteMetrics(waypoints) {
   const segLengths = [];
   let totalNm = 0;
@@ -260,9 +345,6 @@ function buildRouteMetrics(waypoints) {
   return { segLengths, totalNm };
 }
 
-/**
- * Evaluate lat/lon/cog at distance `distNm` along a route (forward or reversed).
- */
 function sampleRoute(waypoints, metrics, distNm, reverse, lateralOffsetDeg) {
   const total = metrics.totalNm;
   let d = ((distNm % total) + total) % total;
@@ -288,7 +370,6 @@ function sampleRoute(waypoints, metrics, distNm, reverse, lateralOffsetDeg) {
     ? initialBearing(lat2, lon2, lat1, lon1)
     : initialBearing(lat1, lon1, lat2, lon2);
 
-  // Apply gentle perpendicular corridor spread so ships form realistic traffic lanes
   const perpRad = ((cog + 90) * Math.PI) / 180;
   const latSpread = Math.cos(perpRad) * lateralOffsetDeg;
   const lonSpread =
@@ -301,14 +382,81 @@ function sampleRoute(waypoints, metrics, distNm, reverse, lateralOffsetDeg) {
   };
 }
 
+function computeSeaWeather(lat, lon, rngVal) {
+  const absLat = Math.abs(lat);
+  const seaTempC = Number(
+    Math.max(1.5, Math.min(30.5, 29.2 - absLat * 0.43 + (rngVal - 0.5) * 3.0)).toFixed(1)
+  );
+  const windBase = absLat > 38 ? 16 : absLat < 15 ? 10 : 13;
+  const windKn = Number((windBase + rngVal * 12).toFixed(1));
+  const waveM = Number(Math.max(0.4, windKn * 0.095 + rngVal * 0.6).toFixed(1));
+  const windDeg = Math.round(((lon * 3 + absLat * 5 + 360) % 360 + 360) % 360);
+  return {
+    windKn,
+    windDir: `${compassDirection(windDeg)} (${windDeg}°)`,
+    waveM,
+    seaTempC,
+  };
+}
+
+function formatEtaLabel(remainingNm, sog) {
+  const hoursLeft = remainingNm / Math.max(4, sog);
+  const etaDate = new Date(Date.now() + hoursLeft * 3600 * 1000);
+  const dStr = `${String(etaDate.getUTCMonth() + 1).padStart(2, '0')}-${String(
+    etaDate.getUTCDate()
+  ).padStart(2, '0')} ${String(etaDate.getUTCHours()).padStart(2, '0')}:00Z`;
+  const days = Math.floor(hoursLeft / 24);
+  const hrs = Math.round(hoursLeft % 24);
+  const remStr = days > 0 ? `${days}일 ${hrs}시간` : `${hrs}시간`;
+  return `${dStr} (${remStr})`;
+}
+
 export class GlobalAisSimulator {
   constructor(seed = 20261121) {
     this.rng = createRng(seed);
     this.vessels = [];
     this.corridorMetrics = new Map();
-    this.speedMultiplier = 120; // Visual default multiplier; client or server can adjust
+    this.speedMultiplier = 120;
     this.lastTickMs = Date.now();
     this._initFleet();
+  }
+
+  _buildCapacityLabel(type, dwt, gt, length, rng) {
+    if (type === 'container') {
+      const teu = Math.round((length / 400) * 24000 * (0.85 + rng() * 0.2));
+      return `${teu.toLocaleString()} TEU`;
+    }
+    if (type === 'tanker') {
+      if (length > 275 && rng() > 0.45) {
+        const cbm = Math.round((145000 + rng() * 45000) / 1000) * 1000;
+        return `${cbm.toLocaleString()} m³ LNG`;
+      }
+      return `${Math.round(dwt / 1000).toLocaleString()}k DWT 원유/석유`;
+    }
+    if (type === 'bulk') {
+      return `${Math.round(dwt / 1000).toLocaleString()}k DWT 벌크`;
+    }
+    if (type === 'passenger') {
+      const pax = Math.round((1600 + rng() * 4600) / 100) * 100;
+      return `${pax.toLocaleString()} PAX (승객)`;
+    }
+    if (type === 'fishing') {
+      return `${gt.toLocaleString()} GT 원양어선`;
+    }
+    return `${gt.toLocaleString()} GT 해양조사/특수`;
+  }
+
+  _buildRouteAhead(v) {
+    const pts = [[Number(v.lat.toFixed(3)), Number(v.lon.toFixed(3))]];
+    const total = v._metrics.totalNm;
+    const rem = Math.max(0, total - v._distNm);
+    const steps = 10;
+    for (let i = 1; i <= steps; i++) {
+      const d = Math.min(total - 0.1, v._distNm + (rem * i) / steps);
+      const p = sampleRoute(v._waypoints, v._metrics, d, v._reverse, v._lateralOffsetDeg);
+      pts.push([Number(p.lat.toFixed(3)), Number(p.lon.toFixed(3))]);
+    }
+    return pts;
   }
 
   _initFleet() {
@@ -330,6 +478,7 @@ export class GlobalAisSimulator {
         const prefix = prefixes[Math.floor(this.rng() * prefixes.length)];
         const suffix = VESSEL_SUFFIXES[Math.floor(this.rng() * VESSEL_SUFFIXES.length)];
         const name = `${prefix} ${suffix}${idx % 5 === 0 ? ' ' + ((idx % 9) + 1) : ''}`;
+        const operator = OPERATOR_BY_PREFIX[prefix] || `${prefix} Maritime Co.`;
 
         const sog = Number(
           (spec.speedRange[0] + this.rng() * (spec.speedRange[1] - spec.speedRange[0])).toFixed(1)
@@ -340,30 +489,47 @@ export class GlobalAisSimulator {
         const beam = Math.round(
           spec.beamRange[0] + this.rng() * (spec.beamRange[1] - spec.beamRange[0])
         );
-        const draught = Number(
+        const maxDraught = Number(
           (spec.draughtRange[0] + this.rng() * (spec.draughtRange[1] - spec.draughtRange[0])).toFixed(1)
         );
+        const cargoStatus =
+          type === 'passenger'
+            ? '여객 운항 중'
+            : type === 'fishing'
+              ? '조업 중'
+              : type === 'special'
+                ? '해양 임무 수행'
+                : CARGO_STATES[Math.floor(this.rng() * CARGO_STATES.length)];
+        const draughtRatio = cargoStatus.includes('밸러스트') ? 0.68 : cargoStatus.includes('부분') ? 0.84 : 0.96;
+        const draught = Number((maxDraught * draughtRatio).toFixed(1));
+
+        const dwt = Math.round(
+          (spec.dwtRange[0] + this.rng() * (spec.dwtRange[1] - spec.dwtRange[0])) / 100
+        ) * 100;
+        const grossTonnage = Math.round((dwt * (type === 'passenger' ? 4.8 : 0.88)) / 100) * 100;
+        const capacityLabel = this._buildCapacityLabel(type, dwt, grossTonnage, length, this.rng);
+        const builtYear = 2009 + Math.floor(this.rng() * 17);
+        const shipyard = SHIPYARDS[Math.floor(this.rng() * SHIPYARDS.length)];
 
         const distNm = this.rng() * metrics.totalNm;
-        // Narrower spread near straits, slightly broader in open ocean
         const lateralOffsetDeg = (this.rng() - 0.5) * 0.45;
         const sample = sampleRoute(corridor.waypoints, metrics, distNm, reverse, lateralOffsetDeg);
 
-        // Pre-seed short wake trail behind vessel
         const trail = [];
-        for (let step = 8; step >= 1; step--) {
+        for (let step = 10; step >= 1; step--) {
           const pastDist = distNm - step * 35;
           const p = sampleRoute(corridor.waypoints, metrics, pastDist, reverse, lateralOffsetDeg);
           trail.push([Number(p.lat.toFixed(4)), Number(p.lon.toFixed(4))]);
         }
         trail.push([Number(sample.lat.toFixed(4)), Number(sample.lon.toFixed(4))]);
 
-        const remainingNm = Math.max(20, metrics.totalNm - distNm);
-        const etaHours = Math.round(remainingNm / Math.max(4, sog));
-        const etaDate = new Date(Date.now() + etaHours * 3600 * 1000);
-        const etaStr = `${String(etaDate.getUTCMonth() + 1).padStart(2, '0')}-${String(
-          etaDate.getUTCDate()
-        ).padStart(2, '0')} ${String(etaDate.getUTCHours()).padStart(2, '0')}:00 UTC`;
+        const totalDistanceNm = Math.round(metrics.totalNm);
+        const traveledNm = Math.round(distNm);
+        const remainingNm = Math.max(1, totalDistanceNm - traveledNm);
+        const progressPct = Number(((traveledNm / Math.max(1, totalDistanceNm)) * 100).toFixed(1));
+
+        const originCode = reverse ? corridor.destination : corridor.origin;
+        const destCode = reverse ? corridor.origin : corridor.destination;
 
         const callChars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
         const callsign =
@@ -372,32 +538,59 @@ export class GlobalAisSimulator {
           callChars[Math.floor(this.rng() * callChars.length)] +
           Math.floor(10 + this.rng() * 89);
 
-        this.vessels.push({
+        const weather = computeSeaWeather(sample.lat, sample.lon, this.rng());
+        const speedNorm = sog / ((spec.speedRange[0] + spec.speedRange[1]) / 2);
+        const fuelEstTpd = Number((spec.baseFuel * Math.pow(speedNorm, 2.6)).toFixed(1));
+        const aisTypeCode =
+          type === 'tanker' && capacityLabel.includes('LNG') ? 84 : spec.aisCode;
+
+        const vessel = {
           mmsi,
           imo,
           name,
           callsign,
           flagCode: flag.code,
           flagName: flag.name,
+          aisClass: type === 'fishing' && length < 55 ? 'Class B' : 'Class A',
           type,
-          aisTypeCode: spec.aisCode,
-          lat: Number(sample.lat.toFixed(4)),
-          lon: Number(sample.lon.toFixed(4)),
+          aisTypeCode,
+          aisTypeDesc: describeAisShipType(aisTypeCode),
+          operator,
+          builtYear,
+          shipyard,
+          lat: Number(sample.lat.toFixed(5)),
+          lon: Number(sample.lon.toFixed(5)),
           sog,
           cog: sample.cog,
           heading: (sample.cog + Math.round((this.rng() - 0.5) * 4) + 360) % 360,
+          rot: 0,
+          navStatusCode: type === 'fishing' ? 7 : 0,
           navStatus: type === 'fishing' ? '어로 작업 중' : '항해 중 (엔진)',
           draught,
+          maxDraught,
           length,
           beam,
-          origin: reverse ? corridor.destination : corridor.origin,
-          destination: reverse ? corridor.origin : corridor.destination,
+          dwt,
+          grossTonnage,
+          capacityLabel,
+          cargoStatus,
+          origin: originCode,
+          originName: PORT_NAME_BY_CODE[originCode] || originCode,
+          destination: destCode,
+          destinationName: PORT_NAME_BY_CODE[destCode] || destCode,
           corridorId: corridor.id,
           corridorName: corridor.name,
-          eta: etaStr,
+          totalDistanceNm,
+          traveledNm,
+          remainingNm,
+          progressPct,
+          eta: formatEtaLabel(remainingNm, sog),
+          ...weather,
+          fuelEstTpd,
           source: 'simulator',
           updatedAt: Date.now(),
           trail,
+          routeAhead: [],
           // Internal kinematics state
           _distNm: distNm,
           _reverse: reverse,
@@ -405,21 +598,22 @@ export class GlobalAisSimulator {
           _waypoints: corridor.waypoints,
           _metrics: metrics,
           _trailAccumNm: 0,
-        });
+          _weatherSeed: this.rng(),
+        };
+        vessel.routeAhead = this._buildRouteAhead(vessel);
+        this.vessels.push(vessel);
         idx++;
       }
     }
   }
 
-  /**
-   * Advance all simulated ships by `dtSeconds` (scaled by `timeScale`).
-   */
   step(dtSeconds, timeScale = 1) {
     if (dtSeconds <= 0 || timeScale <= 0) return;
     const now = Date.now();
     const hours = (dtSeconds * timeScale) / 3600;
 
     for (const v of this.vessels) {
+      const prevCog = v.cog;
       const deltaNm = v.sog * hours;
       v._distNm = (v._distNm + deltaNm) % v._metrics.totalNm;
       v._trailAccumNm += deltaNm;
@@ -431,23 +625,36 @@ export class GlobalAisSimulator {
         v._reverse,
         v._lateralOffsetDeg
       );
-      v.lat = Number(sample.lat.toFixed(4));
-      v.lon = Number(sample.lon.toFixed(4));
+      v.lat = Number(sample.lat.toFixed(5));
+      v.lon = Number(sample.lon.toFixed(5));
       v.cog = sample.cog;
       v.heading = sample.cog;
+
+      let dCog = sample.cog - prevCog;
+      if (dCog > 180) dCog -= 360;
+      if (dCog < -180) dCog += 360;
+      v.rot = Number(Math.max(-15, Math.min(15, dCog / Math.max(0.5, dtSeconds))).toFixed(1));
+
+      v.traveledNm = Math.round(v._distNm);
+      v.remainingNm = Math.max(1, v.totalDistanceNm - v.traveledNm);
+      v.progressPct = Number(((v.traveledNm / Math.max(1, v.totalDistanceNm)) * 100).toFixed(1));
+      v.eta = formatEtaLabel(v.remainingNm, v.sog);
       v.updatedAt = now;
 
       if (v._trailAccumNm >= 25) {
         v._trailAccumNm = 0;
-        v.trail.push([v.lat, v.lon]);
-        if (v.trail.length > 14) v.trail.shift();
+        v.trail.push([Number(v.lat.toFixed(4)), Number(v.lon.toFixed(4))]);
+        if (v.trail.length > 18) v.trail.shift();
+        v.routeAhead = this._buildRouteAhead(v);
+        const w = computeSeaWeather(v.lat, v.lon, v._weatherSeed);
+        v.windKn = w.windKn;
+        v.windDir = w.windDir;
+        v.waveM = w.waveM;
+        v.seaTempC = w.seaTempC;
       }
     }
   }
 
-  /**
-   * Return clean serializable snapshot of all vessels (without internal _ fields).
-   */
   getSnapshot() {
     return this.vessels.map((v) => ({
       mmsi: v.mmsi,
@@ -456,24 +663,48 @@ export class GlobalAisSimulator {
       callsign: v.callsign,
       flagCode: v.flagCode,
       flagName: v.flagName,
+      aisClass: v.aisClass,
       type: v.type,
       aisTypeCode: v.aisTypeCode,
+      aisTypeDesc: v.aisTypeDesc,
+      operator: v.operator,
+      builtYear: v.builtYear,
+      shipyard: v.shipyard,
       lat: v.lat,
       lon: v.lon,
       sog: v.sog,
       cog: v.cog,
       heading: v.heading,
+      rot: v.rot,
+      navStatusCode: v.navStatusCode,
       navStatus: v.navStatus,
       draught: v.draught,
+      maxDraught: v.maxDraught,
       length: v.length,
       beam: v.beam,
+      dwt: v.dwt,
+      grossTonnage: v.grossTonnage,
+      capacityLabel: v.capacityLabel,
+      cargoStatus: v.cargoStatus,
       origin: v.origin,
+      originName: v.originName,
       destination: v.destination,
+      destinationName: v.destinationName,
       corridorName: v.corridorName,
+      totalDistanceNm: v.totalDistanceNm,
+      traveledNm: v.traveledNm,
+      remainingNm: v.remainingNm,
+      progressPct: v.progressPct,
       eta: v.eta,
+      windKn: v.windKn,
+      windDir: v.windDir,
+      waveM: v.waveM,
+      seaTempC: v.seaTempC,
+      fuelEstTpd: v.fuelEstTpd,
       source: v.source,
       updatedAt: v.updatedAt,
       trail: v.trail,
+      routeAhead: v.routeAhead,
     }));
   }
 }

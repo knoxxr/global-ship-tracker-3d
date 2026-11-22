@@ -761,7 +761,9 @@ export class GlobeEngine {
   _drawVessels(ctx, P, sinPhi0, cosPhi0, lam0, ts) {
     this.screenVessels = [];
     const selected = [];
-    const baseSize = Math.max(3.6, Math.min(7.2, 3.8 + this.zoom * 0.75));
+    const baseSize = Math.max(3.6, Math.min(7.4, 3.8 + this.zoom * 0.78));
+    const showAllLabels = this.options.showLabels || this.zoom >= 3.6;
+    const placedLabels = [];
 
     for (const v of this.vessels) {
       const phi = v.lat * DEG2RAD;
@@ -789,32 +791,85 @@ export class GlobeEngine {
         continue;
       }
 
-      // Draw wake trail
       const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
       if (this.options.showWakes && v.trail && v.trail.length > 1) {
         this._drawWake(ctx, v.trail, meta.color, 0.28, 1.0, sinPhi0, cosPhi0, lam0);
       }
 
-      // Draw directional vessel chevron
+      // Subtle ECDIS speed leader tick when zoomed in
+      if (this.zoom >= 2.2 && v.sog > 1) {
+        const tickLen = Math.min(18, baseSize + v.sog * 0.45);
+        ctx.save();
+        ctx.strokeStyle = meta.color;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.sx, p.sy);
+        ctx.lineTo(p.sx + Math.cos(angle) * tickLen, p.sy + Math.sin(angle) * tickLen);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       this._drawShipGlyph(ctx, p.sx, p.sy, angle, baseSize, meta.color, false);
+
+      // Collision-free inline vessel labels when enabled or closely zoomed
+      if (showAllLabels && p.z > 0.22 && placedLabels.length < 70) {
+        const label = `${v.name} · ${v.sog}kn`;
+        ctx.font = '500 10px system-ui, -apple-system, sans-serif';
+        const tw = ctx.measureText(label).width + 8;
+        const th = 14;
+        const bx = p.sx + 8;
+        const by = p.sy - 7;
+        let overlaps = false;
+        for (let j = 0; j < placedLabels.length; j++) {
+          const r = placedLabels[j];
+          if (bx < r.x + r.w && bx + tw > r.x && by < r.y + r.h && by + th > r.y) {
+            overlaps = true;
+            break;
+          }
+        }
+        if (!overlaps) {
+          placedLabels.push({ x: bx, y: by, w: tw, h: th });
+          ctx.fillStyle = P.portLabelBg;
+          ctx.fillRect(bx, by, tw, th);
+          ctx.fillStyle = P.portLabel;
+          ctx.textBaseline = 'middle';
+          ctx.fillText(label, bx + 4, by + th / 2);
+        }
+      }
     }
 
-    // Draw hovered & selected vessels on top with full wake & radar ring
+    // Draw hovered & selected vessels on top with full wake, planned route, and radar ring
     for (const item of selected) {
       const v = item.vessel;
       const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
 
-      if (v.trail && v.trail.length > 1) {
-        this._drawWake(ctx, v.trail, meta.color, 0.78, 2.0, sinPhi0, cosPhi0, lam0);
+      if (v.routeAhead && v.routeAhead.length > 1) {
+        this._drawPlannedRoute(ctx, v.routeAhead, meta.color, sinPhi0, cosPhi0, lam0);
       }
 
+      if (v.trail && v.trail.length > 1) {
+        this._drawWake(ctx, v.trail, meta.color, 0.85, 2.2, sinPhi0, cosPhi0, lam0);
+      }
+
+      // Forward speed/COG vector line
+      const vecLen = Math.min(28, baseSize * 1.5 + (v.sog || 0) * 0.7);
+      ctx.save();
+      ctx.strokeStyle = meta.color;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(item.sx, item.sy);
+      ctx.lineTo(item.sx + Math.cos(item.angle) * vecLen, item.sy + Math.sin(item.angle) * vecLen);
+      ctx.stroke();
+      ctx.restore();
+
       if (item.isSelected) {
-        const pulse = ((ts % 1600) / 1600);
+        const pulse = (ts % 1600) / 1600;
         ctx.strokeStyle = meta.color;
         ctx.globalAlpha = 1 - pulse;
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(item.sx, item.sy, baseSize + 4 + pulse * 16, 0, Math.PI * 2);
+        ctx.arc(item.sx, item.sy, baseSize + 4 + pulse * 18, 0, Math.PI * 2);
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
@@ -824,18 +879,18 @@ export class GlobeEngine {
         item.sx,
         item.sy,
         item.angle,
-        baseSize * 1.45,
+        baseSize * 1.5,
         meta.color,
         true
       );
 
       // Selected callout badge on globe
       if (item.isSelected) {
-        const text = `${v.name} · ${v.sog} kn`;
+        const text = `${v.name} · ${v.sog} kn · ${v.cog}° → ${v.destination || '-'}`;
         ctx.font = '600 11.5px system-ui, -apple-system, sans-serif';
         const tw = ctx.measureText(text).width;
         const bx = item.sx + 12;
-        const by = item.sy - 20;
+        const by = item.sy - 22;
         ctx.fillStyle = P.calloutBg;
         ctx.beginPath();
         ctx.roundRect(bx, by, tw + 14, 22, 5);
@@ -848,6 +903,41 @@ export class GlobeEngine {
         ctx.fillText(text, bx + 7, by + 11);
       }
     }
+  }
+
+  _drawPlannedRoute(ctx, points, color, sinPhi0, cosPhi0, lam0) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    let started = false;
+    let lastPt = null;
+    for (let i = 0; i < points.length; i++) {
+      const [lat, lon] = points[i];
+      const p = this.projectRad(lat * DEG2RAD, lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      if (p.z > 0.02) {
+        if (!started) {
+          ctx.moveTo(p.sx, p.sy);
+          started = true;
+        } else {
+          ctx.lineTo(p.sx, p.sy);
+        }
+        lastPt = p;
+      } else {
+        started = false;
+      }
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (lastPt) {
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.arc(lastPt.sx, lastPt.sy, 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   _drawWake(ctx, trail, color, alpha, width, sinPhi0, cosPhi0, lam0) {

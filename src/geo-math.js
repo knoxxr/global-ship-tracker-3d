@@ -132,3 +132,37 @@ export function formatCoord(value, isLat) {
   const min = ((abs - deg) * 60).toFixed(2);
   return `${deg}°${min.padStart(5, '0')}'${hemi}`;
 }
+
+/**
+ * Format latitude/longitude in Degrees°Minutes'Seconds" notation.
+ */
+export function formatDms(value, isLat) {
+  const hemi = isLat ? (value >= 0 ? 'N' : 'S') : (value >= 0 ? 'E' : 'W');
+  const abs = Math.abs(value);
+  const deg = Math.floor(abs);
+  const minFloat = (abs - deg) * 60;
+  const min = Math.floor(minFloat);
+  const sec = Math.floor((minFloat - min) * 60);
+  return `${deg}°${String(min).padStart(2, '0')}'${String(sec).padStart(2, '0')}"${hemi}`;
+}
+
+const COMPASS_POINTS = [
+  'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+  'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW',
+];
+
+/**
+ * Convert heading/COG in degrees to 16-point cardinal direction.
+ */
+export function compassDirection(deg) {
+  const norm = ((Number(deg) || 0) % 360 + 360) % 360;
+  return COMPASS_POINTS[Math.round(norm / 22.5) % 16];
+}
+
+/**
+ * Convert nautical knots to km/h.
+ */
+export function knotsToKmh(knots) {
+  return Number(((Number(knots) || 0) * 1.852).toFixed(1));
+}
+

@@ -6,10 +6,14 @@ import {
   slerpLatLon,
   getSubsolarPoint,
   formatCoord,
+  formatDms,
+  compassDirection,
+  knotsToKmh,
 } from '../src/geo-math.js';
 import {
   flagFromMmsi,
   classifyAisShipType,
+  describeAisShipType,
   parseAisStreamMessage,
 } from '../src/ais-parser.js';
 import { GlobalAisSimulator } from '../src/ais-simulator.js';
@@ -39,12 +43,16 @@ describe('Spherical Geo Math', () => {
     );
   });
 
-  it('computes valid subsolar coordinates and formats nautical coordinates', () => {
+  it('computes subsolar coordinates, DMS, 16-point compass, and km/h conversion', () => {
     const sun = getSubsolarPoint(new Date('2026-06-21T12:00:00Z'));
     assert.ok(sun.lat > 20 && sun.lat <= 24);
     assert.ok(Math.abs(sun.lon) < 1);
     assert.equal(formatCoord(35.5, true), "35°30.00'N");
     assert.equal(formatCoord(-118.25, false), "118°15.00'W");
+    assert.equal(formatDms(35.5, true), '35°30\'00"N');
+    assert.equal(compassDirection(90), 'E');
+    assert.equal(compassDirection(225), 'SW');
+    assert.equal(knotsToKmh(20), 37.0);
   });
 });
 
@@ -56,6 +64,7 @@ describe('AISStream.io Parser', () => {
     assert.equal(classifyAisShipType(82), 'tanker');
     assert.equal(classifyAisShipType(60), 'passenger');
     assert.equal(classifyAisShipType(30), 'fishing');
+    assert.ok(describeAisShipType(84).includes('LNG'));
   });
 
   it('parses PositionReport and merges ShipStaticData', () => {
@@ -70,6 +79,7 @@ describe('AISStream.io Parser', () => {
           Sog: 19.4,
           Cog: 112.6,
           TrueHeading: 113,
+          RateOfTurn: 4,
           NavigationalStatus: 0,
         },
       },
@@ -79,8 +89,10 @@ describe('AISStream.io Parser', () => {
     assert.equal(v1.mmsi, '440123456');
     assert.equal(v1.name, 'HMM ALGECIRAS');
     assert.equal(v1.flagCode, 'KR');
+    assert.equal(v1.aisClass, 'Class A');
     assert.equal(v1.sog, 19.4);
     assert.equal(v1.cog, 113);
+    assert.equal(v1.rot, 0.4);
     assert.equal(v1.trail.length, 1);
 
     const staticMsg = {
@@ -121,7 +133,7 @@ describe('AISStream.io Parser', () => {
 });
 
 describe('Global AIS Simulator', () => {
-  it('initializes 300+ vessels and advances positions smoothly', () => {
+  it('initializes 300+ vessels with full telemetry and advances positions smoothly', () => {
     const sim = new GlobalAisSimulator(42);
     const snap1 = sim.getSnapshot();
     assert.ok(snap1.length >= 300, `Expected >= 300 vessels, got ${snap1.length}`);
@@ -139,6 +151,12 @@ describe('Global AIS Simulator', () => {
       assert.ok(Number.isFinite(v.lat) && v.lat >= -85 && v.lat <= 85);
       assert.ok(Number.isFinite(v.lon) && v.lon >= -180 && v.lon <= 180);
       assert.ok(v.trail.length >= 2);
+      assert.ok(v.routeAhead.length >= 2);
+      assert.ok(v.operator && v.shipyard && v.capacityLabel);
+      assert.ok(v.dwt > 0 && v.grossTonnage > 0);
+      assert.ok(v.progressPct >= 0 && v.progressPct <= 100);
+      assert.ok(Number.isFinite(v.windKn) && Number.isFinite(v.waveM) && Number.isFinite(v.seaTempC));
+      assert.ok(v.fuelEstTpd > 0);
     }
   });
 });

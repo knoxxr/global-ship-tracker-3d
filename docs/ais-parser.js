@@ -132,6 +132,22 @@ export function classifyAisShipType(typeCode) {
 }
 
 /**
+ * Human-readable description for standard numeric AIS ship type codes.
+ */
+export function describeAisShipType(typeCode) {
+  const code = Number(typeCode);
+  if (code === 30) return '30 · 어선 (Fishing)';
+  if (code === 52) return '52 · 예인/특수선 (Tug/Special)';
+  if (code >= 60 && code <= 69) return `${code} · 여객/크루즈선 (Passenger)`;
+  if (code === 71) return '71 · 컨테이너 화물선 (Container)';
+  if (code >= 70 && code <= 79) return `${code} · 일반/벌크 화물선 (Cargo)`;
+  if (code === 84) return '84 · LNG/가스 운반선 (LNG Tanker)';
+  if (code >= 80 && code <= 89) return `${code} · 유조선/액체화물선 (Tanker)`;
+  if (code >= 31 && code <= 59) return `${code} · 특수목적선 (Special Craft)`;
+  return `${Number.isFinite(code) ? code : 70} · 일반 상선`;
+}
+
+/**
  * Parse an incoming AISStream.io JSON message and merge into an existing vessel record.
  * Returns updated vessel patch or null if invalid coordinates/message.
  */
@@ -155,6 +171,10 @@ export function parseAisStreamMessage(raw, existing = null) {
 
   const flag = flagFromMmsi(mmsi);
   const now = Date.now();
+  const isClassB =
+    msgType === 'StandardClassBPositionReport' ||
+    msgType === 'ExtendedClassBPositionReport';
+
   const base = existing
     ? { ...existing }
     : {
@@ -164,20 +184,43 @@ export function parseAisStreamMessage(raw, existing = null) {
         callsign: '',
         flagCode: flag.code,
         flagName: flag.name,
+        aisClass: isClassB ? 'Class B' : 'Class A',
         type: 'bulk',
         aisTypeCode: 70,
+        aisTypeDesc: describeAisShipType(70),
+        operator: 'Live AIS 수신 선박',
+        builtYear: null,
+        shipyard: '-',
         lat: null,
         lon: null,
         sog: 0,
         cog: 0,
         heading: 0,
+        rot: 0,
+        navStatusCode: 0,
         navStatus: '항해 중 (엔진)',
         draught: null,
+        maxDraught: null,
         length: null,
         beam: null,
-        origin: 'LIVE AIS',
+        dwt: null,
+        grossTonnage: null,
+        capacityLabel: '-',
+        cargoStatus: '실시간 AIS 수신',
+        origin: 'LIVE',
+        originName: '실시간 AIS 수신',
         destination: '미지정',
+        destinationName: '미지정',
+        totalDistanceNm: null,
+        traveledNm: null,
+        remainingNm: null,
+        progressPct: null,
         eta: '-',
+        windKn: null,
+        windDir: null,
+        waveM: null,
+        seaTempC: null,
+        fuelEstTpd: null,
         source: 'aisstream',
         updatedAt: now,
         trail: [],
@@ -223,13 +266,21 @@ export function parseAisStreamMessage(raw, existing = null) {
     const rawHdg = Number(report.TrueHeading);
     const heading =
       Number.isFinite(rawHdg) && rawHdg >= 0 && rawHdg < 360 ? rawHdg : cog;
+    const rawRot = Number(report.RateOfTurn);
+    const rot =
+      Number.isFinite(rawRot) && Math.abs(rawRot) < 127
+        ? Number((rawRot / 10).toFixed(1))
+        : 0;
 
+    base.aisClass = isClassB ? 'Class B' : 'Class A';
     base.lat = lat;
     base.lon = lon;
     base.sog = Number(sog.toFixed(1));
     base.cog = Math.round(cog);
     base.heading = Math.round(heading);
+    base.rot = rot;
     if (report.NavigationalStatus !== undefined) {
+      base.navStatusCode = Number(report.NavigationalStatus);
       base.navStatus = NAV_STATUS_MAP[report.NavigationalStatus] || base.navStatus;
     }
     base.updatedAt = now;
@@ -237,7 +288,7 @@ export function parseAisStreamMessage(raw, existing = null) {
     // Append to wake trail if moved noticeably
     const prev = base.trail[base.trail.length - 1];
     if (!prev || Math.abs(prev[0] - lat) + Math.abs(prev[1] - lon) > 0.02) {
-      base.trail = [...base.trail.slice(-17), [lat, lon]];
+      base.trail = [...base.trail.slice(-23), [lat, lon]];
     }
     return base;
   }
@@ -250,10 +301,12 @@ export function parseAisStreamMessage(raw, existing = null) {
     if (st.CallSign && st.CallSign.trim()) base.callsign = st.CallSign.trim();
     if (st.Destination && st.Destination.trim()) {
       base.destination = st.Destination.trim();
+      base.destinationName = st.Destination.trim();
     }
     if (Number.isFinite(Number(st.Type))) {
       base.aisTypeCode = Number(st.Type);
       base.type = classifyAisShipType(st.Type);
+      base.aisTypeDesc = describeAisShipType(st.Type);
     }
     if (Number.isFinite(Number(st.MaximumStaticDraught))) {
       base.draught = Number(st.MaximumStaticDraught);

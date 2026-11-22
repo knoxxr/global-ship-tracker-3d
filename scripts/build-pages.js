@@ -14,6 +14,7 @@ const FILES_TO_COPY = [
   ['src/ais-simulator.js', 'ais-simulator.js'],
   ['src/public/world-data.js', 'world-data.js'],
   ['src/public/globe-engine.js', 'globe-engine.js'],
+  ['src/public/telemetry-ui.js', 'telemetry-ui.js'],
   ['src/public/styles.css', 'styles.css'],
 ];
 
