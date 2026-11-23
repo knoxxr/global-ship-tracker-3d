@@ -18,6 +18,7 @@ const FILES_TO_COPY = [
   ['src/public/globe-engine.js', 'globe-engine.js'],
   ['src/public/telemetry-ui.js', 'telemetry-ui.js'],
   ['src/public/styles.css', 'styles.css'],
+  ['src/public/sw.js', 'sw.js'],
 ];
 
 await fs.mkdir(docsDir, { recursive: true });

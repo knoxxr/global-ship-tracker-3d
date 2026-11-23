@@ -84,6 +84,33 @@ export function sortVessels(vessels, sortBy = 'recent-desc') {
   }
 }
 
+export function sortVesselsByColumn(vessels, col = 'updatedAt', dir = 'desc') {
+  const copy = [...vessels];
+  const mul = dir === 'asc' ? 1 : -1;
+  const cmpStr = (a, b) => String(a || '').localeCompare(String(b || '')) * mul;
+  const cmpNum = (a, b) => ((Number(a) || 0) - (Number(b) || 0)) * mul;
+
+  switch (col) {
+    case 'name': return copy.sort((a, b) => cmpStr(a.name, b.name));
+    case 'type': return copy.sort((a, b) => cmpStr(a.type, b.type));
+    case 'aisClass': return copy.sort((a, b) => cmpStr(a.aisClass, b.aisClass));
+    case 'flag': return copy.sort((a, b) => cmpStr(a.flagName || a.flagCode, b.flagName || b.flagCode));
+    case 'mmsi': return copy.sort((a, b) => cmpStr(a.mmsi, b.mmsi));
+    case 'imo': return copy.sort((a, b) => cmpStr(a.imo, b.imo));
+    case 'callsign': return copy.sort((a, b) => cmpStr(a.callsign, b.callsign));
+    case 'lat': return copy.sort((a, b) => cmpNum(a.lat, b.lat));
+    case 'lon': return copy.sort((a, b) => cmpNum(a.lon, b.lon));
+    case 'sog': return copy.sort((a, b) => cmpNum(a.sog, b.sog));
+    case 'cog': return copy.sort((a, b) => cmpNum(a.cog, b.cog));
+    case 'destination': return copy.sort((a, b) => cmpStr(a.destination, b.destination));
+    case 'length': return copy.sort((a, b) => cmpNum(a.length, b.length));
+    case 'source': return copy.sort((a, b) => cmpStr(shortSource(a.source), shortSource(b.source)));
+    case 'updatedAt':
+    default:
+      return copy.sort((a, b) => cmpNum(a.updatedAt, b.updatedAt));
+  }
+}
+
 export function renderHoverTooltipHtml(v) {
   const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
   const kmh = ((Number(v.sog) || 0) * 1.852).toFixed(1);
@@ -162,14 +189,16 @@ export function renderVirtualVesselList(
   containerEl,
   vessels,
   selectedMmsi,
-  emptyMessage = '실시간 AIS 데이터를 수신 대기 중입니다...'
+  emptyMessage = '실시간 AIS 데이터를 수신 대기 중입니다...',
+  favoritesSet = null
 ) {
   if (!vessels || vessels.length === 0) {
     containerEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);line-height:1.6;">${escapeHtml(emptyMessage)}</div>`;
     return;
   }
 
-  const ROW_H = 68;
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+  const ROW_H = isMobile ? 78 : 68;
   const BUFFER = 8;
   const total = vessels.length;
   const viewH = containerEl.clientHeight || 560;
@@ -185,12 +214,15 @@ export function renderVirtualVesselList(
     const v = vessels[i];
     const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
     const sel = v.mmsi === selectedMmsi ? 'selected' : '';
+    const favMark = favoritesSet && favoritesSet.has(v.mmsi)
+      ? '<span class="fav-star" title="관심 선박">★</span>'
+      : '';
     html += `
       <button class="vessel-item ${sel}" data-mmsi="${escapeHtml(v.mmsi)}" role="listitem" style="min-height:${ROW_H - 4}px;">
         <div class="vessel-item-top">
           <span class="vessel-name">
             <span class="type-dot" style="background:${meta.color}"></span>
-            ${escapeHtml(v.name)}
+            ${favMark}${escapeHtml(v.name)}
           </span>
           <span class="vessel-speed mono">${v.sog} kn · ${v.cog}°</span>
         </div>
@@ -212,7 +244,7 @@ export function renderVirtualVesselList(
 /**
  * Renders 100% real AIS telemetry inside the right-hand inspector panel.
  */
-export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = false) {
+export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = false, isFavorite = false) {
   const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
   const kmh = ((Number(v.sog) || 0) * 1.852).toFixed(1);
   const updatedStr = v.updatedAt ? new Date(v.updatedAt).toISOString().slice(11, 19) + ' UTC' : '-';
@@ -252,7 +284,10 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
           ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">상세·24시간 항적 조회 중...</span>` : ''}
         </div>
       </div>
-      <button id="btn-close-inspector" class="btn btn-icon" title="닫기">✕</button>
+      <div class="inspector-head-btns">
+        <button id="btn-favorite-vessel" class="btn btn-icon ${isFavorite ? 'fav-active' : ''}" title="${isFavorite ? '관심 선박 해제' : '관심 선박 등록'}" aria-label="관심 선박 토글">${isFavorite ? '★' : '☆'}</button>
+        <button id="btn-close-inspector" class="btn btn-icon" title="닫기" aria-label="닫기">✕</button>
+      </div>
     </div>
 
     <div class="section-label">실시간 항해 텔레메트리 (Live AIS)</div>
@@ -327,6 +362,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
         ${followSelected ? '추적 잠금 해제' : '카메라 추적 잠금'}
       </button>
       <button id="btn-center-vessel" class="btn">위치로 이동</button>
+      <button id="btn-share-vessel" class="btn btn-icon" title="이 선박 링크 복사" aria-label="선박 링크 복사">🔗</button>
     </div>
   `;
 }
@@ -334,13 +370,14 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
 /**
  * Virtualized full-fleet table renderer: smoothly scrolls 20,000+ live vessels.
  */
-export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi) {
+export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi, favoritesSet = null) {
   if (!vessels || !vessels.length) {
     tbodyEl.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">현재 수신된 실시간 선박이 없습니다.</td></tr>`;
     return;
   }
 
-  const ROW_H = 31;
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768;
+  const ROW_H = isMobile ? 40 : 31;
   const BUFFER = 12;
   const total = vessels.length;
   const viewH = wrapEl.clientHeight || 600;
@@ -356,12 +393,15 @@ export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi) 
     const v = vessels[i];
     const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
     const sel = v.mmsi === selectedMmsi ? 'selected' : '';
+    const favMark = favoritesSet && favoritesSet.has(v.mmsi)
+      ? '<span class="fav-star" title="관심 선박">★</span> '
+      : '';
     html += `
       <tr class="${sel}" data-mmsi="${escapeHtml(v.mmsi)}" style="height:${ROW_H}px;">
         <td class="mono" style="color:var(--text-muted);">${i + 1}</td>
         <td style="font-weight:600;">
           <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:6px;"></span>
-          ${escapeHtml(v.name)}
+          ${favMark}${escapeHtml(v.name)}
         </td>
         <td>${meta.short}</td>
         <td class="mono">${escapeHtml(v.aisClass || 'A')}</td>
@@ -385,6 +425,20 @@ export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi) 
 }
 
 /**
+ * Neutralize spreadsheet formula injection (=, +, -, @, tab, CR) on text cells while keeping negative numbers intact.
+ */
+export function escapeCsvCell(val) {
+  let str = String(val ?? '');
+  if (
+    /^[=+\-@\t\r]/.test(str) &&
+    !(typeof val === 'number' || /^-\d+(\.\d+)?$/.test(str))
+  ) {
+    str = `'${str}`;
+  }
+  return `"${str.replaceAll('"', '""')}"`;
+}
+
+/**
  * Download all live vessels' complete real AIS telemetry as a UTF-8 CSV file.
  */
 export function exportVesselsCsv(vessels) {
@@ -394,7 +448,6 @@ export function exportVesselsCsv(vessels) {
     'Destination', 'ETA', 'Length_m', 'Beam_m', 'Draught_m', 'DWT_t', 'GT',
     'BuiltYear', 'Source', 'Station', 'UpdatedAt_UTC',
   ];
-  const esc = (val) => `"${String(val ?? '').replaceAll('"', '""')}"`;
   const lines = [headers.join(',')];
   for (const v of vessels) {
     lines.push(
@@ -405,7 +458,7 @@ export function exportVesselsCsv(vessels) {
         v.builtYear, v.source, v.station,
         v.updatedAt ? new Date(v.updatedAt).toISOString() : '',
       ]
-        .map(esc)
+        .map(escapeCsvCell)
         .join(',')
     );
   }

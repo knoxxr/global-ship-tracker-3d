@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="theme-color" content="#040b14" />
-  <link rel="stylesheet" href="./styles.css?v=5" />
+  <link rel="stylesheet" href="./styles.css?v=6" />
 </head>
 <body>
   <div class="app-shell">
@@ -111,6 +111,7 @@
 
     <div id="coord-readout" class="coord-readout mono">LAT 51.60°N · LON 10.00°E · 1.5x</div>
     <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+    <div id="toast-notice" class="toast-notice hidden" role="status" aria-live="polite"></div>
 
     <!-- Full-Screen All Live Vessels Data Table Modal -->
     <div id="fleet-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="fleet-modal-title">
@@ -118,33 +119,40 @@
         <div class="fleet-modal-header">
           <div>
             <h2 id="fleet-modal-title">전 세계 실시간 수신 선박 전체 현황</h2>
-            <p id="fleet-modal-sub">실제 수신된 모든 AIS 선박 데이터 (행을 클릭하면 3D 지구본에서 즉시 추적 및 24시간 항적 조회)</p>
+            <p id="fleet-modal-sub">실제 수신된 모든 AIS 선박 데이터 (헤더 클릭 정렬 · 행 클릭 시 3D 지구본 즉시 추적)</p>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;">
+          <div class="fleet-modal-controls">
+            <input
+              id="fleet-modal-search"
+              class="search-box fleet-modal-search"
+              type="search"
+              placeholder="표 내 선박명·MMSI·목적지 검색..."
+              autocomplete="off"
+            />
             <button id="btn-export-csv" class="btn">CSV 내보내기</button>
             <button id="btn-close-fleet-modal" class="btn btn-primary">닫기</button>
           </div>
         </div>
         <div id="fleet-table-wrap" class="fleet-table-wrap">
           <table class="fleet-table">
-            <thead>
+            <thead id="fleet-table-head">
               <tr>
                 <th>#</th>
-                <th>선박명</th>
-                <th>선종</th>
-                <th>Class</th>
-                <th>국적</th>
-                <th>MMSI</th>
-                <th>IMO</th>
-                <th>호출부호</th>
-                <th>위도</th>
-                <th>경도</th>
-                <th>속력</th>
-                <th>침로</th>
-                <th>목적지</th>
-                <th>전장×선폭 / 흘수</th>
-                <th>수신 출처</th>
-                <th>수신 시각</th>
+                <th data-sort-col="name">선박명</th>
+                <th data-sort-col="type">선종</th>
+                <th data-sort-col="aisClass">Class</th>
+                <th data-sort-col="flag">국적</th>
+                <th data-sort-col="mmsi">MMSI</th>
+                <th data-sort-col="imo">IMO</th>
+                <th data-sort-col="callsign">호출부호</th>
+                <th data-sort-col="lat">위도</th>
+                <th data-sort-col="lon">경도</th>
+                <th data-sort-col="sog">속력</th>
+                <th data-sort-col="cog">침로</th>
+                <th data-sort-col="destination">목적지</th>
+                <th data-sort-col="length">전장×선폭 / 흘수</th>
+                <th data-sort-col="source">수신 출처</th>
+                <th data-sort-col="updatedAt">수신 시각</th>
               </tr>
             </thead>
             <tbody id="fleet-table-body"></tbody>
@@ -186,6 +194,6 @@
     </div>
   </div>
 
-  <script type="module" src="./pages-app.js?v=7"></script>
+  <script type="module" src="./pages-app.js?v=8"></script>
 </body>
 </html>

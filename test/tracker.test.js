@@ -14,6 +14,7 @@ import {
   flagFromMmsi,
   classifyAisShipType,
   describeAisShipType,
+  cleanAisText,
   parseOpenWatersEvent,
   parseOpenWatersFeature,
   parseOpenWatersTilePoint,
@@ -21,6 +22,11 @@ import {
   parseDigitrafficData,
   parseAisStreamMessage,
 } from '../src/ais-parser.js';
+import {
+  shortSource,
+  sortVesselsByColumn,
+  escapeCsvCell,
+} from '../src/public/telemetry-ui.js';
 import { decodeMvtPoints } from '../src/mvt-decoder.js';
 import { LIVE_ZONES, buildBboxAround } from '../src/live-zones.js';
 import { ShipTrackerServer } from '../src/server.js';
@@ -328,5 +334,57 @@ describe('ShipTrackerServer Live-Only HTTP & SSE API', () => {
     }
     ctrl.abort();
     assert.ok(buffer.includes('257090090'));
+
+    // Verify webmanifest MIME & MMSI validation
+    const manRes = await fetch(`${base}/manifest.webmanifest`);
+    assert.equal(manRes.status, 200);
+    assert.ok((manRes.headers.get('content-type') || '').includes('application/manifest+json'));
+
+    const badMmsiRes = await fetch(`${base}/api/vessel/not-an-mmsi`);
+    assert.equal(badMmsiRes.status, 400);
+  });
+});
+
+describe('AIS Text Cleaning, Telemetry UI Helpers & CSV Security', () => {
+  it('strips ITU-R AIS @ padding characters across parsers', () => {
+    assert.equal(cleanAisText('@@@@@BUSAN@@@PORT@@'), 'BUSAN PORT');
+    assert.equal(cleanAisText('@@@@@@@@@'), '');
+    const feat = parseOpenWatersFeature({
+      type: 'Feature',
+      id: 440777888,
+      geometry: { type: 'Point', coordinates: [129.04, 35.1] },
+      properties: {
+        mmsi: 440777888,
+        name: 'KOREA STAR@@@@@',
+        callsign: 'DS9AB@@@',
+        destination: '@@@@KR PUS@@@@',
+        sog: 12.5,
+      },
+    });
+    assert.equal(feat.name, 'KOREA STAR');
+    assert.equal(feat.callsign, 'DS9AB');
+    assert.equal(feat.destination, 'KR PUS');
+  });
+
+  it('compacts long AIS source keys, sorts fleet columns, and neutralizes CSV formula injection', () => {
+    assert.equal(shortSource('station:ed25519:rTY1234567890'), 'station');
+    assert.equal(shortSource('kystverket'), 'kystverket');
+
+    const sorted = sortVesselsByColumn(
+      [
+        { name: 'BETA', sog: 5.2, updatedAt: 100 },
+        { name: 'ALPHA', sog: 18.4, updatedAt: 200 },
+      ],
+      'sog',
+      'desc'
+    );
+    assert.equal(sorted[0].name, 'ALPHA');
+    assert.equal(sortVesselsByColumn(sorted, 'name', 'asc')[0].name, 'ALPHA');
+
+    assert.equal(escapeCsvCell('=CMD()'), '"\'=CMD()"');
+    assert.equal(escapeCsvCell('+1234'), '"\'+1234"');
+    assert.equal(escapeCsvCell('@SUM(A1)'), '"\'@SUM(A1)"');
+    assert.equal(escapeCsvCell(-120.45), '"-120.45"');
+    assert.equal(escapeCsvCell('-74.01'), '"-74.01"');
   });
 });

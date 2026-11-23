@@ -43,6 +43,7 @@ const MIME_TYPES = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
 async function runPool(items, concurrency, fn) {
@@ -570,7 +571,10 @@ export class ShipTrackerServer {
     }
 
     if (pathname.startsWith('/api/vessel/') && req.method === 'GET') {
-      const mmsi = pathname.slice('/api/vessel/'.length);
+      const mmsi = decodeURIComponent(pathname.slice('/api/vessel/'.length)).trim();
+      if (!/^\d{5,12}$/.test(mmsi)) {
+        return this._sendJson(res, 400, { error: 'Invalid MMSI format' });
+      }
       try {
         const vessel = await this._fetchVesselEnrichment(mmsi);
         if (!vessel) return this._sendJson(res, 404, { error: 'Vessel not found' });
@@ -581,6 +585,15 @@ export class ShipTrackerServer {
     }
 
     if (pathname === '/api/config' && req.method === 'POST') {
+      const adminToken = (process.env.ADMIN_TOKEN || '').trim();
+      if (adminToken) {
+        const auth = String(req.headers.authorization || '');
+        const xTok = String(req.headers['x-admin-token'] || '');
+        const provided = auth.startsWith('Bearer ') ? auth.slice(7).trim() : xTok.trim();
+        if (provided !== adminToken) {
+          return this._sendJson(res, 401, { ok: false, error: 'Unauthorized' });
+        }
+      }
       try {
         const body = await this._readJsonBody(req);
         if (typeof body.openWatersToken === 'string') {

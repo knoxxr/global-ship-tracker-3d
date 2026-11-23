@@ -185,27 +185,85 @@ export class GlobeEngine {
 
     this._rafId = null;
     this._lastFrameTs = performance.now();
+    this._lastRenderTs = 0;
+    this._dirty = true;
+    this._spatialGrid = new Map();
 
     this._bindEvents();
     this.resize();
     this.start();
   }
 
+  requestRender() {
+    this._dirty = true;
+  }
+
+  _rebuildSpatialGrid() {
+    const grid = new Map();
+    const list = this.vessels;
+    for (let i = 0; i < list.length; i++) {
+      const v = list[i];
+      const latB = Math.max(-9, Math.min(8, Math.floor(v.lat / 10)));
+      const lonB = Math.max(-18, Math.min(17, Math.floor(v.lon / 10)));
+      const key = (latB + 9) * 36 + (lonB + 18);
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      bucket.push(v);
+    }
+    this._spatialGrid = grid;
+  }
+
+  _getCandidateVessels() {
+    if (this.vessels.length <= 500 || this.zoom < 2.2 || this._spatialGrid.size === 0) {
+      return this.vessels;
+    }
+    const span = this.getViewportSpanDeg();
+    const padLat = span.halfLat * 1.25 + 10;
+    const padLon = span.halfLon * 1.25 + 10;
+    if (padLon >= 160 || padLat >= 80) return this.vessels;
+
+    const minLatB = Math.max(-9, Math.min(8, Math.floor((this.centerLat - padLat) / 10)));
+    const maxLatB = Math.max(-9, Math.min(8, Math.floor((this.centerLat + padLat) / 10)));
+    const rawMinLonB = Math.floor((this.centerLon - padLon) / 10);
+    const rawMaxLonB = Math.floor((this.centerLon + padLon) / 10);
+
+    const out = [];
+    for (let lb = minLatB; lb <= maxLatB; lb++) {
+      const rowOff = (lb + 9) * 36;
+      for (let rawLon = rawMinLonB; rawLon <= rawMaxLonB; rawLon++) {
+        const lonIdx = (((rawLon + 18) % 36) + 36) % 36;
+        const bucket = this._spatialGrid.get(rowOff + lonIdx);
+        if (bucket) {
+          for (let j = 0; j < bucket.length; j++) out.push(bucket[j]);
+        }
+      }
+    }
+    return out;
+  }
+
   setVessels(vessels) {
     this.vessels = vessels;
+    this._rebuildSpatialGrid();
+    this._dirty = true;
   }
 
   setSelectedVessel(mmsi, follow = false) {
     this.selectedMmsi = mmsi;
     this.followSelected = Boolean(mmsi && follow);
+    this._dirty = true;
   }
 
   setOption(key, value) {
     this.options[key] = value;
+    this._dirty = true;
   }
 
   setTheme(theme) {
     this.options.theme = theme;
+    this._dirty = true;
   }
 
   /**
@@ -218,9 +276,10 @@ export class GlobeEngine {
     const sinPhi0 = Math.sin(phi0);
     const cosPhi0 = Math.cos(phi0);
     const candidates = [];
+    const pool = this._getCandidateVessels();
 
-    for (let i = 0; i < this.vessels.length; i++) {
-      const v = this.vessels[i];
+    for (let i = 0; i < pool.length; i++) {
+      const v = pool[i];
       if ((v.sog || 0) < 1.5) continue;
       const p = this.projectRad(v.lat * DEG2RAD, v.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
       if (p.z < 0.15) continue;
@@ -278,6 +337,7 @@ export class GlobeEngine {
       startTs: performance.now(),
       durationMs,
     };
+    this._dirty = true;
   }
 
   zoomBy(factor) {
@@ -304,6 +364,7 @@ export class GlobeEngine {
     this.cy = this.height / 2;
     this.baseRadius = Math.min(this.width, this.height) * 0.42;
     this.radius = this.baseRadius * this.zoom;
+    this._dirty = true;
   }
 
   projectRad(phi, lam, sinPhi0, cosPhi0, lam0) {
@@ -400,6 +461,7 @@ export class GlobeEngine {
 
         this._pinchDist = dist;
         this._pinchMid = mid;
+        this._dirty = true;
         return;
       }
 
@@ -425,6 +487,7 @@ export class GlobeEngine {
           this.centerLat = Math.max(-82, Math.min(82, this.centerLat + dLat));
           this.velLon = dLon;
           this.velLat = dLat;
+          this._dirty = true;
         }
         this.lastPointer = { x: e.clientX, y: e.clientY };
         return;
@@ -436,6 +499,9 @@ export class GlobeEngine {
       // Check cluster hit first, then individual vessel
       const cluster = this._pickCluster(mx, my, false);
       if (cluster) {
+        if (this.hoveredClusterId !== cluster.id || this.hoveredMmsi !== null) {
+          this._dirty = true;
+        }
         this.hoveredClusterId = cluster.id;
         this.hoveredMmsi = null;
         this.canvas.style.cursor = 'pointer';
@@ -445,6 +511,7 @@ export class GlobeEngine {
       }
       if (this.hoveredClusterId !== null) {
         this.hoveredClusterId = null;
+        this._dirty = true;
         this.onHoverCluster(null, 0, 0);
       }
 
@@ -452,6 +519,7 @@ export class GlobeEngine {
       const hitId = hit ? hit.mmsi : null;
       if (hitId !== this.hoveredMmsi) {
         this.hoveredMmsi = hitId;
+        this._dirty = true;
         this.canvas.style.cursor = hit ? 'pointer' : 'grab';
       }
       this.onHoverVessel(hit, mx, my);
@@ -470,6 +538,7 @@ export class GlobeEngine {
         this.velLat = 0;
         this.velLon = 0;
         this.lastPointer = { x: remaining.x, y: remaining.y };
+        this._dirty = true;
         return;
       }
 
@@ -522,6 +591,7 @@ export class GlobeEngine {
     this.canvas.addEventListener('pointercancel', endDrag);
     this.canvas.addEventListener('pointerleave', () => {
       if (!this.isDragging) {
+        if (this.hoveredMmsi !== null || this.hoveredClusterId !== null) this._dirty = true;
         this.hoveredMmsi = null;
         this.hoveredClusterId = null;
         this.onHoverVessel(null, 0, 0);
@@ -571,6 +641,7 @@ export class GlobeEngine {
             this.centerLon = (((this.centerLon + dLon + 180) % 360) + 360) % 360 - 180;
           }
         }
+        this._dirty = true;
       },
       { passive: false }
     );
@@ -604,8 +675,14 @@ export class GlobeEngine {
     const loop = (ts) => {
       const dt = Math.min(0.05, (ts - this._lastFrameTs) / 1000);
       this._lastFrameTs = ts;
-      this._updateCamera(ts, dt);
-      this.render(ts);
+      const moved = this._updateCamera(ts, dt);
+      const pulseActive = Boolean(this.selectedMmsi);
+      const idleTick = ts - this._lastRenderTs >= 1000;
+      if (this._dirty || moved || pulseActive || idleTick) {
+        this._dirty = false;
+        this._lastRenderTs = ts;
+        this.render(ts);
+      }
       this._rafId = requestAnimationFrame(loop);
     };
     this._rafId = requestAnimationFrame(loop);
@@ -617,12 +694,15 @@ export class GlobeEngine {
   }
 
   _updateCamera(ts, dt) {
+    let moved = false;
     const mobileSheetActive = this.width <= 768 && Boolean(this.selectedMmsi);
     const targetCy = mobileSheetActive ? this.height * 0.32 : this.height * 0.5;
     if (Math.abs(this.cy - targetCy) > 0.5) {
       this.cy += (targetCy - this.cy) * Math.min(1, dt * 9);
-    } else {
+      moved = true;
+    } else if (this.cy !== targetCy) {
       this.cy = targetCy;
+      moved = true;
     }
 
     if (this.flyTarget) {
@@ -635,14 +715,18 @@ export class GlobeEngine {
       // Exponential zoom interpolation feels perceptually smooth from 1x to 1500x!
       this.zoom = f.startZoom * Math.pow(f.targetZoom / Math.max(0.1, f.startZoom), ease);
       if (t >= 1) this.flyTarget = null;
+      moved = true;
     } else if (this.followSelected && this.selectedMmsi) {
       const target = this.vessels.find((v) => v.mmsi === this.selectedMmsi);
       if (target) {
         let dLon = target.lon - this.centerLon;
         if (dLon > 180) dLon -= 360;
         if (dLon < -180) dLon += 360;
-        this.centerLon = (((this.centerLon + dLon * 0.08 + 180) % 360) + 360) % 360 - 180;
-        this.centerLat += (target.lat - this.centerLat) * 0.08;
+        if (Math.abs(dLon) > 0.0001 || Math.abs(target.lat - this.centerLat) > 0.0001) {
+          this.centerLon = (((this.centerLon + dLon * 0.08 + 180) % 360) + 360) % 360 - 180;
+          this.centerLat += (target.lat - this.centerLat) * 0.08;
+          moved = true;
+        }
       }
     } else if (!this.isDragging) {
       const velEps = 0.004 / Math.max(1, this.zoom);
@@ -652,19 +736,24 @@ export class GlobeEngine {
         this.centerLat = Math.max(-82, Math.min(82, this.centerLat + this.velLat));
         this.velLon *= 0.88;
         this.velLat *= 0.88;
+        moved = true;
       } else if (this.options.autoRotate) {
         const rotSpeed = 5.0 / Math.max(1, Math.sqrt(this.zoom));
         this.centerLon =
           (((this.centerLon + dt * rotSpeed + 180) % 360) + 360) % 360 - 180;
+        moved = true;
       }
     }
 
     this.radius = this.baseRadius * this.zoom;
-    this.onCameraChange({
-      lat: this.centerLat,
-      lon: this.centerLon,
-      zoom: this.zoom,
-    });
+    if (moved || this._dirty) {
+      this.onCameraChange({
+        lat: this.centerLat,
+        lon: this.centerLon,
+        zoom: this.zoom,
+      });
+    }
+    return moved;
   }
 
   _getPalette() {
@@ -1196,6 +1285,8 @@ export class GlobeEngine {
     this.screenClusters = [];
     const selected = [];
     const totalCount = this.vessels.length;
+    const candidates = this._getCandidateVessels();
+    const candCount = candidates.length;
     const wPad = this.width + 24;
     const hPad = this.height + 24;
     const baseSize = Math.max(3.4, Math.min(9.5, 3.4 + Math.log2(Math.max(1, this.zoom)) * 0.95));
@@ -1207,8 +1298,8 @@ export class GlobeEngine {
       const cellPx = this.zoom < 1.5 ? 40 : this.zoom < 2.6 ? 32 : 24;
       const grid = new Map();
 
-      for (let i = 0; i < totalCount; i++) {
-        const v = this.vessels[i];
+      for (let i = 0; i < candCount; i++) {
+        const v = candidates[i];
         const p = this.projectRad(v.lat * DEG2RAD, v.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
         if (p.z < 0.04 || p.sx < -24 || p.sx > wPad || p.sy < -24 || p.sy > hPad) continue;
 
@@ -1333,8 +1424,8 @@ export class GlobeEngine {
       const placedLabels = [];
       const mooredOccupancy = new Set();
 
-      for (let i = 0; i < totalCount; i++) {
-        const v = this.vessels[i];
+      for (let i = 0; i < candCount; i++) {
+        const v = candidates[i];
         const p = this.projectRad(v.lat * DEG2RAD, v.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
         if (p.z < 0.03 || p.sx < -24 || p.sx > wPad || p.sy < -24 || p.sy > hPad) continue;
 

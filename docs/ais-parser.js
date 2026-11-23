@@ -235,6 +235,18 @@ function formatAisEtaObj(eta) {
 }
 
 /**
+ * Strip ITU-R M.1371 6-bit ASCII '@' padding and collapse excess whitespace.
+ */
+export function cleanAisText(raw) {
+  if (raw === null || raw === undefined) return '';
+  return String(raw)
+    .replace(/@+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Parse Open Waters AIS native /v1/stream WebSocket event frame.
  */
 export function parseOpenWatersEvent(ev, existing = null) {
@@ -294,12 +306,12 @@ export function parseOpenWatersEvent(ev, existing = null) {
 
   // Static data (Type 5 & Type 24)
   if (msgType === 'ShipStaticData' || msgType === 'StaticDataReport') {
-    const name = (msg.Name || msg.ReportA?.Name || '').trim();
+    const name = cleanAisText(msg.Name || msg.ReportA?.Name);
     if (name) base.name = name;
     if (msg.ImoNumber && Number(msg.ImoNumber) > 0) base.imo = String(msg.ImoNumber);
-    const callsign = (msg.CallSign || msg.ReportB?.CallSign || '').trim();
+    const callsign = cleanAisText(msg.CallSign || msg.ReportB?.CallSign);
     if (callsign) base.callsign = callsign;
-    const dest = (msg.Destination || '').trim();
+    const dest = cleanAisText(msg.Destination);
     if (dest) base.destination = dest;
 
     const shipType = Number(msg.Type ?? msg.ReportB?.ShipType);
@@ -358,10 +370,11 @@ export function parseOpenWatersFeature(feature, existing = null) {
     return null;
   }
 
-  if (props.name && String(props.name).trim()) base.name = String(props.name).trim();
+  const cleanedName = cleanAisText(props.name);
+  if (cleanedName) base.name = cleanedName;
   if (props.imo && Number(props.imo) > 0) base.imo = String(props.imo);
-  if (props.callsign && String(props.callsign).trim()) base.callsign = String(props.callsign).trim();
-  if (props.call_sign && String(props.call_sign).trim()) base.callsign = String(props.call_sign).trim();
+  const cleanedCs = cleanAisText(props.callsign || props.call_sign);
+  if (cleanedCs) base.callsign = cleanedCs;
   if (props.class) base.aisClass = props.class === 'B' ? 'Class B' : 'Class A';
   if (props.flag && String(props.flag).trim()) base.flagCode = String(props.flag).trim();
 
@@ -396,7 +409,8 @@ export function parseOpenWatersFeature(feature, existing = null) {
   if (Number.isFinite(Number(props.to_port))) base.dimC = Number(props.to_port);
   if (Number.isFinite(Number(props.to_starboard))) base.dimD = Number(props.to_starboard);
   if (Number.isFinite(Number(props.draught)) && Number(props.draught) > 0) base.draught = Number(props.draught);
-  if (props.destination && String(props.destination).trim()) base.destination = String(props.destination).trim();
+  const cleanedDest = cleanAisText(props.destination);
+  if (cleanedDest) base.destination = cleanedDest;
   if (props.eta && typeof props.eta === 'string') base.eta = props.eta;
   if (props.near && String(props.near).trim()) base.near = String(props.near).trim();
   if (props.first_seen && typeof props.first_seen === 'string') base.firstSeen = props.first_seen;
@@ -445,7 +459,8 @@ export function parseOpenWatersTilePoint(pt, existing = null) {
     base.trail = [[base.lat, base.lon]];
   }
 
-  if (props.name && String(props.name).trim()) base.name = String(props.name).trim();
+  const cleanedTileName = cleanAisText(props.name);
+  if (cleanedTileName) base.name = cleanedTileName;
   if (props.class) base.aisClass = props.class === 'B' ? 'Class B' : 'Class A';
   if (props.flag && String(props.flag).trim()) base.flagCode = String(props.flag).trim();
 
@@ -548,10 +563,13 @@ export function parseDigitrafficData(locationsGeoJson, vesselsMetaList = []) {
     }
     v.updatedAt = Number(p.timestampExternal) || Date.now();
 
-    if (m.name && String(m.name).trim()) v.name = String(m.name).trim();
+    const dName = cleanAisText(m.name);
+    if (dName) v.name = dName;
     if (m.imo && Number(m.imo) > 0) v.imo = String(m.imo);
-    if (m.callSign && String(m.callSign).trim()) v.callsign = String(m.callSign).trim();
-    if (m.destination && String(m.destination).trim()) v.destination = String(m.destination).trim();
+    const dCs = cleanAisText(m.callSign);
+    if (dCs) v.callsign = dCs;
+    const dDest = cleanAisText(m.destination);
+    if (dDest) v.destination = dDest;
     if (Number(m.draught) > 0) v.draught = Number((Number(m.draught) / 10).toFixed(1));
     if (Number(m.shipType) > 0) {
       v.aisTypeCode = Number(m.shipType);
@@ -594,7 +612,8 @@ export function parseAisStreamMessage(raw, existing = null) {
     msgType === 'ExtendedClassBPositionReport';
 
   const base = existing ? { ...existing } : createEmptyVessel(mmsi, 'aisstream');
-  if (meta.ShipName && meta.ShipName.trim()) base.name = meta.ShipName.trim();
+  const metaName = cleanAisText(meta.ShipName);
+  if (metaName) base.name = metaName;
 
   if (
     msgType === 'PositionReport' ||
@@ -633,10 +652,13 @@ export function parseAisStreamMessage(raw, existing = null) {
 
   if (msgType === 'ShipStaticData' && payload.ShipStaticData) {
     const st = payload.ShipStaticData;
-    if (st.Name && st.Name.trim()) base.name = st.Name.trim();
+    const stName = cleanAisText(st.Name);
+    if (stName) base.name = stName;
     if (st.ImoNumber) base.imo = String(st.ImoNumber);
-    if (st.CallSign && st.CallSign.trim()) base.callsign = st.CallSign.trim();
-    if (st.Destination && st.Destination.trim()) base.destination = st.Destination.trim();
+    const stCs = cleanAisText(st.CallSign);
+    if (stCs) base.callsign = stCs;
+    const stDest = cleanAisText(st.Destination);
+    if (stDest) base.destination = stDest;
     if (Number.isFinite(Number(st.Type))) {
       base.aisTypeCode = Number(st.Type);
       base.type = classifyAisShipType(st.Type);

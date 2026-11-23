@@ -1292,3 +1292,87 @@ body.theme-light .fleet-stat {
 
 /* Long AIS station keys / source IDs wrap cleanly */
 .kv-value { overflow-wrap: anywhere; }
+
+/* Favorites, Table Sort, Modal Search & Toast */
+.inspector-head-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.fav-star {
+  color: var(--warning);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.btn.fav-active {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.fleet-modal-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.fleet-modal-search {
+  width: 220px;
+}
+
+.fleet-table thead th.sort-active {
+  color: var(--accent);
+}
+
+.fleet-table thead th.sort-asc::after {
+  content: ' ▲';
+  font-size: 9.5px;
+}
+
+.fleet-table thead th.sort-desc::after {
+  content: ' ▼';
+  font-size: 9.5px;
+}
+
+.toast-notice {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface-solid);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast-notice.hidden {
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -8px);
+}
+
+@media (max-width: 768px) {
+  .fleet-modal-controls {
+    width: 100%;
+  }
+  .fleet-modal-search {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .toast-notice {
+    top: calc(max(8px, env(safe-area-inset-top)) + 104px);
+    max-width: calc(100vw - 24px);
+    text-align: center;
+  }
+}
