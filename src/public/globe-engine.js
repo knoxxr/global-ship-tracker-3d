@@ -142,6 +142,7 @@ export class GlobeEngine {
       showBorders: true,
       showLabels: false,
       showGraticule: true,
+      showChartTiles: true,
       theme: options.theme || 'dark',
     };
 
@@ -154,13 +155,17 @@ export class GlobeEngine {
     this.screenVessels = [];
     this.screenClusters = [];
 
-    // Prepare Natural Earth 50m land, 50m borders, 50m lakes & shipping corridors
+    // Boot immediately with lightweight coastlines (~62KB), then lazy-upgrade to full 50m world-geo.js
     this.preparedPolygons = WORLD_POLYGONS.map((ring) => preparePath(ring, true, 4.5));
     this.preparedBorders = COUNTRY_BORDERS.map((line) => preparePath(line, false, 4.5));
     this.preparedLakes = WORLD_LAKES.map((ring) => preparePath(ring, true, 4.5));
     this.preparedCorridors = CORRIDOR_LINES.map((line) =>
       preparePath(line.map(([lat, lon]) => [lon, lat]), false, 3.0)
     );
+    this._highResGeoLoaded = false;
+
+    // On-demand high-zoom nautical chart + OpenSeaMap seamark tile cache (LRU)
+    this._tileCache = new Map();
 
     // Subtle background starfield
     this.stars = Array.from({ length: 140 }, (_, i) => {
@@ -192,6 +197,25 @@ export class GlobeEngine {
     this._bindEvents();
     this.resize();
     this.start();
+    this._scheduleHighResGeoUpgrade();
+  }
+
+  _scheduleHighResGeoUpgrade() {
+    if (this._highResGeoLoaded) return;
+    setTimeout(() => {
+      import('./world-geo.js')
+        .then((mod) => {
+          if (!mod || !Array.isArray(mod.WORLD_POLYGONS)) return;
+          this.preparedPolygons = mod.WORLD_POLYGONS.map((ring) => preparePath(ring, true, 4.5));
+          this.preparedBorders = mod.COUNTRY_BORDERS.map((line) => preparePath(line, false, 4.5));
+          this.preparedLakes = mod.WORLD_LAKES.map((ring) => preparePath(ring, true, 4.5));
+          this._highResGeoLoaded = true;
+          this._dirty = true;
+        })
+        .catch(() => {
+          // Keep lite geometry gracefully if offline or blocked
+        });
+    }, 120);
   }
 
   requestRender() {
@@ -890,6 +914,11 @@ export class GlobeEngine {
     // 6. Natural Earth 50m Landmasses + Coastal Shelf Glow + Lakes + Country Borders
     this._drawHighResMap(ctx, P, sinPhi0, cosPhi0, lam0);
 
+    // 6.5. Optional High-Zoom Nautical Chart + OpenSeaMap Seamarks Overlay (>= 12x, vector fallback)
+    if (this.options.showChartTiles && this.zoom >= 12) {
+      this._drawChartTiles(ctx, sinPhi0, cosPhi0, lam0);
+    }
+
     // 7. Real-Time Solar Terminator
     const sun = getSubsolarRad();
     const sunVec = latLonToVec3(sun.phi * RAD2DEG, sun.lam * RAD2DEG);
@@ -982,6 +1011,114 @@ export class GlobeEngine {
     ctx.lineTo(x + barPx, y + 1);
     ctx.lineTo(x + barPx, y - 3);
     ctx.stroke();
+    ctx.restore();
+  }
+
+  _getTile(key, url) {
+    let entry = this._tileCache.get(key);
+    if (entry) {
+      // Refresh LRU order
+      this._tileCache.delete(key);
+      this._tileCache.set(key, entry);
+      return entry;
+    }
+    if (typeof Image === 'undefined') return null;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
+    entry = { img, status: 'loading' };
+    this._tileCache.set(key, entry);
+    if (this._tileCache.size > 240) {
+      const oldest = this._tileCache.keys().next().value;
+      if (oldest) this._tileCache.delete(oldest);
+    }
+    img.onload = () => {
+      entry.status = 'ok';
+      this._dirty = true;
+    };
+    img.onerror = () => {
+      entry.status = 'err';
+    };
+    img.src = url;
+    return entry;
+  }
+
+  _drawChartTiles(ctx, sinPhi0, cosPhi0, lam0) {
+    if (Math.abs(this.centerLat) > 82) return;
+    const alpha = Math.max(0, Math.min(1, (this.zoom - 12) / 8));
+    if (alpha <= 0.01) return;
+
+    const rawZ = Math.log2((2 * Math.PI * this.radius * Math.max(0.2, cosPhi0)) / 256);
+    const z = Math.max(6, Math.min(16, Math.ceil(rawZ)));
+    const n = 1 << z;
+
+    const span = this.getViewportSpanDeg();
+    const minLat = Math.max(-84, this.centerLat - span.halfLat * 1.15);
+    const maxLat = Math.min(84, this.centerLat + span.halfLat * 1.15);
+    const minLon = this.centerLon - span.halfLon * 1.15;
+    const maxLon = this.centerLon + span.halfLon * 1.15;
+
+    const latToY = (lat) => {
+      const rad = lat * DEG2RAD;
+      return Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n);
+    };
+    const lonToX = (lon) => Math.floor(((lon + 180) / 360) * n);
+    const yToLat = (ty) => Math.atan(Math.sinh(Math.PI * (1 - (2 * ty) / n))) * RAD2DEG;
+    const xToLon = (tx) => (tx / n) * 360 - 180;
+
+    const minY = Math.max(0, Math.min(n - 1, latToY(maxLat)));
+    const maxY = Math.max(0, Math.min(n - 1, latToY(minLat)));
+    const rawMinX = lonToX(minLon);
+    const rawMaxX = lonToX(maxLon);
+
+    // Guard against huge tile counts on extreme ratios
+    if ((maxY - minY + 1) * (rawMaxX - rawMinX + 1) > 64) return;
+
+    const isLight = this.options.theme === 'light';
+
+    ctx.save();
+    for (let ty = minY; ty <= maxY; ty++) {
+      const latN = yToLat(ty) * DEG2RAD;
+      const latS = yToLat(ty + 1) * DEG2RAD;
+      for (let rawX = rawMinX; rawX <= rawMaxX; rawX++) {
+        const tx = ((rawX % n) + n) % n;
+        const lonW = xToLon(tx) * DEG2RAD;
+        const lonE = xToLon(tx + 1) * DEG2RAD;
+
+        const pNW = this.projectRad(latN, lonW, sinPhi0, cosPhi0, lam0);
+        const pSE = this.projectRad(latS, lonE, sinPhi0, cosPhi0, lam0);
+        if (pNW.z <= 0.05 || pSE.z <= 0.05) continue;
+
+        const w = pSE.sx - pNW.sx;
+        const h = pSE.sy - pNW.sy;
+        if (w <= 2 || h <= 2 || w > this.width * 3) continue;
+
+        const baseKey = `osm/${z}/${tx}/${ty}`;
+        const baseUrl = `https://tile.openstreetmap.org/${z}/${tx}/${ty}.png`;
+        const baseTile = this._getTile(baseKey, baseUrl);
+        if (baseTile && baseTile.status === 'ok') {
+          ctx.save();
+          if (!isLight) {
+            // Transform bright OSM map into low-glare maritime dark chart palette
+            ctx.filter = 'invert(1) hue-rotate(185deg) brightness(0.84) contrast(1.08) saturate(0.55)';
+          }
+          ctx.globalAlpha = alpha * (isLight ? 0.94 : 0.88);
+          ctx.drawImage(baseTile.img, pNW.sx, pNW.sy, w + 0.6, h + 0.6);
+          ctx.restore();
+        }
+
+        // OpenSeaMap nautical seamarks (buoys, lighthouses, harbor channels, TSS)
+        if (z >= 9) {
+          const seaKey = `seamark/${z}/${tx}/${ty}`;
+          const seaUrl = `https://tiles.openseamap.org/seamark/${z}/${tx}/${ty}.png`;
+          const seaTile = this._getTile(seaKey, seaUrl);
+          if (seaTile && seaTile.status === 'ok') {
+            ctx.globalAlpha = alpha * 0.96;
+            ctx.drawImage(seaTile.img, pNW.sx, pNW.sy, w + 0.6, h + 0.6);
+          }
+        }
+      }
+    }
     ctx.restore();
   }
 

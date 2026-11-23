@@ -1,8 +1,10 @@
 # MarineGlobe 3D — App Listing Screenshots
 
-All captures use **real live AIS data** (Open Waters AIS and others), recorded on 2026-11-22. No simulated vessels.
+All captures use **real live AIS data** (Open Waters AIS and others). No simulated vessels.
 
-| # | File (1920×1080 / 1280×800) | 설명 (KO) | Caption (EN) |
+## Desktop (1920×1080 & 1280×800)
+
+| # | File | 설명 (KO) | Caption (EN) |
 |---|---|---|---|
 | 01 | `desktop-*-01-global-overview.png` | 전세계 실시간 AIS 선박 약 3.5만 척, 3D 지구본 | Global live AIS: ~35k vessels on a 3D globe |
 | 02 | `desktop-*-02-korea-strait-live.png` | 한반도·대한해협 실시간 교통 | Korea Strait live traffic |
@@ -12,5 +14,16 @@ All captures use **real live AIS data** (Open Waters AIS and others), recorded o
 | 06 | `desktop-*-06-fleet-table.png` | 전체 선박 표 (검색·정렬·CSV) | Full fleet table (search, sort, CSV) |
 | 07 | `desktop-*-07-light-theme.png` | 라이트 테마 (상하이·대만) | Light theme (Shanghai / Taiwan) |
 
-- 1280×800 fits Chrome Web Store and Microsoft Store desktop requirements.
-- 1920×1080 suits web/PWA listings and promo pages.
+## Mobile Portrait (1080×1920, 9:16 — Google Play / PWA Store)
+
+| # | File | 설명 (KO) | Caption (EN) |
+|---|---|---|---|
+| 01 | `mobile-1080x1920-01-global-overview.png` | 모바일 3D 지구본 전체 화면 + 실시간 선박 수 | Mobile 3D globe overview with live vessel count |
+| 02 | `mobile-1080x1920-02-korea-strait-live.png` | 한반도·대한해협 실시간 교통 + 스와이프 툴바 | Korea Strait live traffic & swipeable toolbar |
+| 03 | `mobile-1080x1920-03-vessel-drawer.png` | 모바일 슬라이드 선박 검색·필터 서랍 | Mobile slide-over vessel search & filter drawer |
+| 04 | `mobile-1080x1920-04-vessel-sheet-track.png` | 선박 상세 바텀 시트 + 관심선박·공유 링크 | Vessel bottom sheet with favorites & share link |
+| 05 | `mobile-1080x1920-05-harbor-nautical-chart.png` | 싱가포르 해협 고배율 해도·OpenSeaMap 항로표지 (90배) | High-zoom harbor chart & OpenSeaMap seamarks (90x) |
+
+- **1280×800**: Chrome Web Store / Microsoft Store desktop
+- **1920×1080**: Web / PWA promo & desktop listings
+- **1080×1920**: Google Play Store / mobile PWA listings

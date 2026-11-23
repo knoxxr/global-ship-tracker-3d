@@ -1,10 +1,10 @@
 /**
- * High-resolution world map metadata: imports Natural Earth 50m coastlines,
- * 110m country borders, and major lakes from ./world-geo.js, and provides
- * 38 world ports, 22 sea/strait labels, shipping corridors, and vessel type styles.
+ * World map metadata: boots instantly with lightweight ./world-geo-lite.js (~62KB)
+ * while GlobeEngine lazy-upgrades to full Natural Earth 50m ./world-geo.js in background.
+ * Also provides 38 world ports, 22 sea/strait labels, shipping corridors, and vessel type styles.
  */
 
-export { WORLD_POLYGONS, COUNTRY_BORDERS, WORLD_LAKES } from './world-geo.js';
+export { WORLD_POLYGONS, COUNTRY_BORDERS, WORLD_LAKES } from './world-geo-lite.js';
 
 export const VESSEL_TYPES = {
   container: { label: '컨테이너선', short: '컨테이너', color: '#10b981' },
