@@ -70,6 +70,7 @@
         />
         <div id="filter-grid" class="filter-grid"></div>
       </div>
+      <div id="port-filter-banner" class="port-filter-banner hidden"></div>
       <div id="fleet-summary" class="fleet-summary"></div>
       <div class="vessel-list-meta">
         <span id="filtered-count">실시간 수신: 0척</span>
@@ -87,7 +88,7 @@
       </div>
       <div id="vessel-list" class="vessel-list" role="list"></div>
       <div style="padding:6px 10px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted);line-height:1.4;">
-        Live AIS: Open Waters AIS · Kystverket (NLOD 2.0) · BarentsWatch · Fintraffic Digitraffic (CC BY 4.0) · AISHub · Charts: Natural Earth · © OpenStreetMap · OpenSeaMap
+        Live AIS: Open Waters AIS · Kystverket (NLOD 2.0) · BarentsWatch · Fintraffic Digitraffic (CC BY 4.0) · AISHub · Weather: Open-Meteo Marine · Charts: Natural Earth · © OpenStreetMap · OpenSeaMap
       </div>
     </aside>
 
@@ -103,13 +104,17 @@
       <button id="btn-load-tracks" class="btn" title="현재 화면에 보이는 항해 선박들의 실제 24시간 AIS 항적 불러오기">화면 항적 로드</button>
       <button id="btn-refresh-live" class="btn" title="전 세계 전역 실시간 재조회">새로고침</button>
       <div class="divider"></div>
+      <button id="btn-measure" class="btn" title="대권 거리·방위·ETA 측정 도구 (두 지점 클릭)">측정</button>
+      <button id="btn-share-view" class="btn" title="현재 화면·선박 링크 복사">공유</button>
+      <button id="btn-snapshot" class="btn" title="현재 3D 지구본 PNG 스냅샷 저장">캡처</button>
+      <div class="divider"></div>
       <button id="btn-clusters" class="btn active" title="밀집 해역 자동 클러스터링">클러스터</button>
       <button id="btn-moving-only" class="btn" title="항해 중인 선박(0.5kn 이상)만 표시">항해선만</button>
       <button id="btn-wakes" class="btn active" title="선박 항적(웨이크/실제 24시간 항적) 표시">항적</button>
       <button id="btn-charts" class="btn active" title="고배율(12배+) 확대 시 상세 해도 및 OpenSeaMap 항로표지 표시">해도</button>
       <button id="btn-borders" class="btn active" title="국가 국경선 표시">국경선</button>
       <button id="btn-daynight" class="btn active" title="실시간 태양 주/야간 음영">주/야간</button>
-      <button id="btn-ports" class="btn active" title="세계 주요 항만 표시">주요항</button>
+      <button id="btn-ports" class="btn active" title="세계 주요 항만 표시 (클릭 시 반경 15NM 관제 필터)">주요항</button>
       <button id="btn-labels" class="btn" title="선박명 라벨 표시">라벨</button>
       <button id="btn-autorotate" class="btn" title="지구본 자동 회전">회전</button>
     </div>

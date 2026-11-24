@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   haversineNm,
   initialBearing,
+  destinationPoint,
   slerpLatLon,
   getSubsolarPoint,
   formatCoord,
@@ -26,7 +27,12 @@ import {
   shortSource,
   sortVesselsByColumn,
   escapeCsvCell,
+  renderInspectorBodyHtml,
 } from '../src/public/telemetry-ui.js';
+import {
+  filterVesselsList,
+  createFavoriteMonitor,
+} from '../src/public/ui-controller.js';
 import { decodeMvtPoints } from '../src/mvt-decoder.js';
 import { LIVE_ZONES, buildBboxAround, getViewportMvtTiles } from '../src/live-zones.js';
 import {
@@ -500,4 +506,77 @@ describe('Multi-User Rate-Limit Guard, Coalescing & Shared Viewport API', () => 
     }
   });
 });
+
+describe('Nautical Analysis Tools, Port Geofence & Favorite Status Alerts', () => {
+  it('computes accurate Dead Reckoning destinationPoint matching haversineNm & initialBearing', () => {
+    const startLat = 35.1;
+    const startLon = 129.04;
+    const dest = destinationPoint(startLat, startLon, 45, 60);
+    const dist = haversineNm(startLat, startLon, dest.lat, dest.lon);
+    const brg = initialBearing(startLat, startLon, dest.lat, dest.lon);
+    assert.ok(Math.abs(dist - 60) < 0.05);
+    assert.ok(Math.abs(brg - 45) < 0.1);
+  });
+
+  it('filters vessels within 15NM port control radius and detects favorite departure/arrival changes', () => {
+    const busan = { name: '부산항', lat: 35.1, lon: 129.04, radiusNm: 15 };
+    const ships = [
+      { mmsi: '440100001', name: 'NEAR SHIP', type: 'container', lat: 35.12, lon: 129.08, sog: 12.0 },
+      { mmsi: '440100002', name: 'FAR SHIP', type: 'container', lat: 37.5, lon: 126.6, sog: 14.0 },
+    ];
+    const filtered = filterVesselsList(ships, {
+      movingOnly: false,
+      activeType: 'all',
+      searchQuery: '',
+      favorites: new Set(),
+      portFilter: busan,
+    });
+    assert.equal(filtered.length, 1);
+    assert.equal(filtered[0].mmsi, '440100001');
+
+    const alerts = [];
+    const checkFav = createFavoriteMonitor((ev) => alerts.push(ev));
+    const map = new Map([['440100001', { mmsi: '440100001', name: 'KOREA STAR', sog: 0.1 }]]);
+    const favs = new Set(['440100001']);
+
+    // First tick records baseline moored state (no alert)
+    checkFav(map, favs);
+    assert.equal(alerts.length, 0);
+
+    // Vessel departs (sog crosses 0.5kn)
+    map.set('440100001', { mmsi: '440100001', name: 'KOREA STAR', sog: 6.4 });
+    checkFav(map, favs);
+    assert.equal(alerts.length, 1);
+    assert.equal(alerts[0].type, 'departed');
+
+    // Vessel arrives/moors
+    map.set('440100001', { mmsi: '440100001', name: 'KOREA STAR', sog: 0.2 });
+    checkFav(map, favs);
+    assert.equal(alerts.length, 2);
+    assert.equal(alerts[1].type, 'moored');
+
+    // Marine weather card renders cleanly inside inspector HTML
+    const html = renderInspectorBodyHtml(
+      {
+        mmsi: '440100001',
+        name: 'KOREA STAR',
+        type: 'container',
+        lat: 35.1,
+        lon: 129.04,
+        sog: 12.5,
+        cog: 90,
+        trail: [],
+      },
+      false,
+      false,
+      true,
+      { waveHeight: 1.4, wavePeriod: 6.2, waveDir: 180, seaTemp: 17.8, windKn: 14.2, windDir: 210 }
+    );
+    assert.ok(html.includes('Open-Meteo Marine'));
+    assert.ok(html.includes('1.4 m'));
+    assert.ok(html.includes('14.2 kn'));
+    assert.ok(html.includes('btn-measure-from-vessel'));
+  });
+});
+
 

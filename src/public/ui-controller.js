@@ -89,6 +89,7 @@ export function queryCommonDom() {
     mobileBackdrop: document.getElementById('mobile-backdrop'),
     searchInput: document.getElementById('search-input'),
     filterGrid: document.getElementById('filter-grid'),
+    portFilterBanner: document.getElementById('port-filter-banner'),
     fleetSummary: document.getElementById('fleet-summary'),
     filteredCount: document.getElementById('filtered-count'),
     sortSelect: document.getElementById('sort-select'),
@@ -104,6 +105,9 @@ export function queryCommonDom() {
     btnScanView: document.getElementById('btn-scan-view'),
     btnLoadTracks: document.getElementById('btn-load-tracks'),
     btnRefreshLive: document.getElementById('btn-refresh-live'),
+    btnMeasure: document.getElementById('btn-measure'),
+    btnShareView: document.getElementById('btn-share-view'),
+    btnSnapshot: document.getElementById('btn-snapshot'),
     btnClusters: document.getElementById('btn-clusters'),
     btnMovingOnly: document.getElementById('btn-moving-only'),
     btnCharts: document.getElementById('btn-charts'),
@@ -136,6 +140,136 @@ export function queryCommonDom() {
   };
 }
 
+export function haversineNmSimple(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const dp = (lat2 - lat1) * r;
+  const dl = (lon2 - lon1) * r;
+  const a =
+    Math.sin(dp / 2) ** 2 +
+    Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dl / 2) ** 2;
+  return 3440.065 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+}
+
+const marineWeatherCache = new Map(); // gridKey -> { data, ts }
+const WEATHER_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Fetches live wave height, period, sea surface temperature, and wind speed/direction
+ * from the free, keyless Open-Meteo Marine + Forecast APIs with 10-minute 0.25° grid caching.
+ */
+export async function fetchMarineWeather(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const gLat = (Math.round(lat * 4) / 4).toFixed(2);
+  const gLon = (Math.round(lon * 4) / 4).toFixed(2);
+  const key = `${gLat},${gLon}`;
+  const hit = marineWeatherCache.get(key);
+  if (hit && Date.now() - hit.ts < WEATHER_CACHE_TTL_MS) {
+    return hit.data;
+  }
+
+  try {
+    const [marineRes, windRes] = await Promise.allSettled([
+      fetch(
+        `https://marine-api.open-meteo.com/v1/marine?latitude=${gLat}&longitude=${gLon}&current=wave_height,wave_direction,wave_period,sea_surface_temperature`
+      ),
+      fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${gLat}&longitude=${gLon}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=kn`
+      ),
+    ]);
+
+    const data = {
+      waveHeight: null,
+      wavePeriod: null,
+      waveDir: null,
+      seaTemp: null,
+      windKn: null,
+      windDir: null,
+    };
+    let hasAny = false;
+
+    if (marineRes.status === 'fulfilled' && marineRes.value.ok) {
+      const m = await marineRes.value.json();
+      const cur = m?.current || {};
+      if (cur.wave_height != null) { data.waveHeight = Number(cur.wave_height); hasAny = true; }
+      if (cur.wave_period != null) { data.wavePeriod = Number(cur.wave_period); hasAny = true; }
+      if (cur.wave_direction != null) { data.waveDir = Number(cur.wave_direction); hasAny = true; }
+      if (cur.sea_surface_temperature != null) { data.seaTemp = Number(cur.sea_surface_temperature); hasAny = true; }
+    }
+    if (windRes.status === 'fulfilled' && windRes.value.ok) {
+      const w = await windRes.value.json();
+      const cur = w?.current || {};
+      if (cur.wind_speed_10m != null) { data.windKn = Number(cur.wind_speed_10m); hasAny = true; }
+      if (cur.wind_direction_10m != null) { data.windDir = Number(cur.wind_direction_10m); hasAny = true; }
+    }
+
+    const result = hasAny ? data : null;
+    if (marineWeatherCache.size > 200) {
+      marineWeatherCache.delete(marineWeatherCache.keys().next().value);
+    }
+    marineWeatherCache.set(key, { data: result, ts: Date.now() });
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tracks favorite (★) vessels' moving vs moored state and emits departure/arrival notifications.
+ */
+export function createFavoriteMonitor(onEvent) {
+  const prevState = new Map(); // mmsi -> boolean (moving)
+  return (vesselsMap, favorites) => {
+    const events = [];
+    if (!favorites || favorites.size === 0) return events;
+    for (const mmsi of favorites) {
+      const v = vesselsMap.get(mmsi);
+      if (!v) continue;
+      const moving = (Number(v.sog) || 0) >= 0.5;
+      if (prevState.has(mmsi)) {
+        const wasMoving = prevState.get(mmsi);
+        if (wasMoving !== moving) {
+          const ev = {
+            mmsi,
+            name: v.name || `MMSI ${mmsi}`,
+            type: moving ? 'departed' : 'moored',
+            sog: Number(v.sog) || 0,
+          };
+          events.push(ev);
+          if (onEvent) onEvent(ev);
+        }
+      }
+      prevState.set(mmsi, moving);
+    }
+    return events;
+  };
+}
+
+export function renderPortFilterBanner(bannerEl, portFilter, filteredVessels) {
+  if (!bannerEl) return;
+  if (!portFilter) {
+    bannerEl.classList.add('hidden');
+    bannerEl.innerHTML = '';
+    return;
+  }
+  let moving = 0;
+  for (const v of filteredVessels) {
+    if ((v.sog || 0) >= 0.5) moving++;
+  }
+  const moored = filteredVessels.length - moving;
+  const safeName = String(portFilter.name || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+  bannerEl.classList.remove('hidden');
+  bannerEl.innerHTML = `
+    <div class="port-banner-info">
+      <strong>⚓ ${safeName} (${portFilter.radiusNm || 15}NM)</strong>
+      <span class="mono">항해 ${moving} · 정박 ${moored}</span>
+    </div>
+    <button id="btn-clear-port-filter" class="btn btn-icon" type="button" title="항만 관제 필터 해제" aria-label="항만 필터 해제">✕</button>
+  `;
+}
+
 export function buildFilterChipsHtml(allVessels, activeType, favorites) {
   const counts = { all: allVessels.length, favorites: 0 };
   for (const key of Object.keys(VESSEL_TYPES)) counts[key] = 0;
@@ -159,10 +293,14 @@ export function buildFilterChipsHtml(allVessels, activeType, favorites) {
   return html;
 }
 
-export function filterVesselsList(allVessels, { movingOnly, activeType, searchQuery, favorites }) {
+export function filterVesselsList(allVessels, { movingOnly, activeType, searchQuery, favorites, portFilter }) {
   const q = searchQuery;
   return allVessels.filter((v) => {
     if (movingOnly && (v.sog || 0) < 0.5) return false;
+    if (portFilter) {
+      const dist = haversineNmSimple(v.lat, v.lon, portFilter.lat, portFilter.lon);
+      if (dist > (portFilter.radiusNm || 15)) return false;
+    }
     if (activeType === 'favorites') {
       if (!favorites.has(v.mmsi)) return false;
     } else if (activeType !== 'all' && v.type !== activeType) {
@@ -310,12 +448,26 @@ export function bindSharedUi({
       }
       return;
     }
+    if (e.target.closest('#btn-measure-from-vessel')) {
+      const v = state.vesselsMap.get(state.selectedMmsi);
+      if (!v) return;
+      if (isMobileViewport()) dom.inspector.classList.remove('expanded');
+      globe.setMeasureMode(true, {
+        lat: v.lat,
+        lon: v.lon,
+        label: v.name,
+        speedKn: Number(v.sog) || 0,
+      });
+      if (dom.btnMeasure) dom.btnMeasure.classList.add('active');
+      showToast(`📏 ${v.name} 출발점 고정 — 목적지를 클릭해 거리·ETA를 측정하세요`);
+      return;
+    }
     if (e.target.closest('#btn-share-vessel')) {
       const v = state.vesselsMap.get(state.selectedMmsi);
       if (!v) return;
       const z = Math.max(6, Math.round(globe.zoom * 10) / 10);
       const hash = `#mmsi=${encodeURIComponent(v.mmsi)}&lat=${v.lat.toFixed(4)}&lon=${v.lon.toFixed(4)}&z=${z}`;
-      const shareUrl = `${window.location.origin}${window.location.pathname}${hash}`;
+      const shareUrl = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
       try {
         window.history.replaceState(null, '', hash);
       } catch { /* ignore */ }
@@ -328,6 +480,37 @@ export function bindSharedUi({
       }
     }
   });
+
+  // Port 15NM geofence filter helper & clear button
+  function setPortFilter(port) {
+    state.portFilter = port ? { name: port.name, lat: port.lat, lon: port.lon, radiusNm: port.radiusNm || 15 } : null;
+    globe.setActivePortFilter(state.portFilter);
+    dom.vesselList.scrollTop = 0;
+    if (state.portFilter) {
+      globe.flyTo(port.lat, port.lon, Math.max(globe.zoom, 6.2), 650);
+      setSidebarOpen(true);
+      showToast(`⚓ ${port.name} 반경 ${state.portFilter.radiusNm}NM 항만 관제 필터 적용`);
+    } else {
+      showToast('항만 관제 필터를 해제했습니다.');
+    }
+    applyFiltersAndRender();
+  }
+
+  globe.onSelectPort = (port) => {
+    if (state.portFilter && state.portFilter.name === port.name) {
+      setPortFilter(null);
+    } else {
+      setPortFilter(port);
+    }
+  };
+
+  if (dom.portFilterBanner) {
+    dom.portFilterBanner.addEventListener('click', (e) => {
+      if (e.target.closest('#btn-clear-port-filter')) {
+        setPortFilter(null);
+      }
+    });
+  }
 
   // Mobile bottom-sheet swipe gestures
   let sheetTouchStartY = null;
@@ -433,6 +616,71 @@ export function bindSharedUi({
   dom.btnZoomIn.addEventListener('click', () => globe.zoomBy(1.4));
   dom.btnZoomOut.addEventListener('click', () => globe.zoomBy(0.71));
 
+  // Great-circle distance/bearing/ETA ruler toggle
+  if (dom.btnMeasure) {
+    dom.btnMeasure.addEventListener('click', () => {
+      const next = !globe.measureMode;
+      if (next) {
+        const v = state.selectedMmsi ? state.vesselsMap.get(state.selectedMmsi) : null;
+        const anchor = v
+          ? { lat: v.lat, lon: v.lon, label: v.name, speedKn: Number(v.sog) || 0 }
+          : null;
+        globe.setMeasureMode(true, anchor);
+        dom.btnMeasure.classList.add('active');
+        showToast(
+          anchor
+            ? `📏 ${anchor.label} 출발 — 목적지를 클릭하세요 (Esc 종료)`
+            : '📏 거리·방위 측정 모드 — 지구본에서 출발지·목적지를 순서대로 클릭하세요'
+        );
+      } else {
+        globe.clearMeasure();
+        dom.btnMeasure.classList.remove('active');
+        showToast('거리 측정을 종료했습니다.');
+      }
+    });
+  }
+
+  // One-click current view / selected vessel deep-link share
+  if (dom.btnShareView) {
+    dom.btnShareView.addEventListener('click', () => {
+      const params = new URLSearchParams();
+      if (state.selectedMmsi) params.set('mmsi', state.selectedMmsi);
+      params.set('lat', globe.centerLat.toFixed(4));
+      params.set('lon', globe.centerLon.toFixed(4));
+      params.set('z', (Math.round(globe.zoom * 10) / 10).toString());
+      const hash = `#${params.toString()}`;
+      const shareUrl = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
+      try {
+        window.history.replaceState(null, '', hash);
+      } catch { /* ignore */ }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(shareUrl)
+          .then(() => showToast('🔗 현재 화면 공유 링크를 복사했습니다.'))
+          .catch(() => showToast('주소창 공유 링크가 업데이트되었습니다.'));
+      } else {
+        showToast('주소창 공유 링크가 업데이트되었습니다.');
+      }
+    });
+  }
+
+  // High-DPI PNG snapshot export
+  if (dom.btnSnapshot) {
+    dom.btnSnapshot.addEventListener('click', () => {
+      try {
+        const dataUrl = globe.exportPngDataUrl();
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `marineglobe-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        showToast('📸 현재 3D 지구본 PNG 스냅샷을 저장했습니다.');
+      } catch {
+        showToast('PNG 캡처 중 오류가 발생했습니다.');
+      }
+    });
+  }
+
   // Layer toggles (including high-zoom nautical chart tiles!)
   const LAYER_BINDINGS = [
     [dom.btnClusters, 'showClusters'],
@@ -488,6 +736,11 @@ export function bindSharedUi({
         dom.fleetModal.classList.add('hidden');
       } else if (!dom.apiModal.classList.contains('hidden')) {
         dom.apiModal.classList.add('hidden');
+      } else if (globe.measureMode) {
+        globe.clearMeasure();
+        if (dom.btnMeasure) dom.btnMeasure.classList.remove('active');
+      } else if (state.portFilter) {
+        setPortFilter(null);
       } else if (isMobileViewport() && !dom.sidebar.classList.contains('collapsed')) {
         setSidebarOpen(false);
       } else if (state.selectedMmsi) {
@@ -525,7 +778,7 @@ export function bindSharedUi({
     setSidebarOpen(false);
   }
 
-  return { setSidebarOpen, closeInspector };
+  return { setSidebarOpen, closeInspector, setPortFilter };
 }
 
 export function registerAppServiceWorker(swUrl = './sw.js') {

@@ -21,6 +21,9 @@ import {
   parseHashDeepLink,
   createToast,
   queryCommonDom,
+  fetchMarineWeather,
+  createFavoriteMonitor,
+  renderPortFilterBanner,
   buildFilterChipsHtml,
   filterVesselsList,
   filterAndSortTableVessels,
@@ -50,6 +53,8 @@ const state = {
   filteredVessels: [],
   tableVessels: [],
   selectedMmsi: null,
+  selectedWeather: null,
+  portFilter: null,
   pendingDeepLinkMmsi: deepLink.mmsi || null,
   loadingDetailsMmsi: null,
   followSelected: false,
@@ -81,6 +86,13 @@ const dom = {
 };
 
 const showToast = createToast(dom.toastNotice);
+const checkFavoriteAlerts = createFavoriteMonitor((ev) => {
+  showToast(
+    ev.type === 'departed'
+      ? `★ ${ev.name} 출항 감지 (${ev.sog.toFixed(1)} kn)`
+      : `★ ${ev.name} 정박/감속 감지 (${ev.sog.toFixed(1)} kn)`
+  );
+});
 let autoTrackTimer = null;
 let autoViewportTimer = null;
 let lastAutoTrackKey = '';
@@ -207,13 +219,18 @@ function renderInspector() {
   const prevScroll = dom.inspector.scrollTop;
   dom.inspector.classList.remove('hidden');
   document.body.classList.add('inspector-open');
-  dom.inspector.innerHTML = renderInspectorBodyHtml(
+  const nextHtml = renderInspectorBodyHtml(
     v,
     state.followSelected,
     state.loadingDetailsMmsi === v.mmsi,
-    state.favorites.has(v.mmsi)
+    state.favorites.has(v.mmsi),
+    state.selectedWeather
   );
-  dom.inspector.scrollTop = prevScroll;
+  if (dom.inspector._lastHtml !== nextHtml) {
+    dom.inspector._lastHtml = nextHtml;
+    dom.inspector.innerHTML = nextHtml;
+    dom.inspector.scrollTop = prevScroll;
+  }
 }
 
 function applyFiltersAndRender() {
@@ -226,6 +243,7 @@ function applyFiltersAndRender() {
   dom.fleetSummary.innerHTML = renderFleetSummaryHtml(state.filteredVessels);
   dom.filteredCount.textContent = `실시간 수신: ${countStr}척`;
 
+  renderPortFilterBanner(dom.portFilterBanner, state.portFilter, state.filteredVessels);
   dom.filterGrid.innerHTML = buildFilterChipsHtml(state.allVessels, state.activeType, state.favorites);
   renderVisibleList();
   renderInspector();
@@ -302,6 +320,7 @@ const ui = bindSharedUi({
 
 async function selectVessel(mmsi, fly = false) {
   state.selectedMmsi = mmsi;
+  state.selectedWeather = null;
   const v = state.vesselsMap.get(mmsi);
   if (!v) return;
 
@@ -314,6 +333,15 @@ async function selectVessel(mmsi, fly = false) {
   state.loadingDetailsMmsi = mmsi;
   renderVisibleList();
   renderInspector();
+
+  fetchMarineWeather(v.lat, v.lon)
+    .then((w) => {
+      if (state.selectedMmsi === mmsi && w) {
+        state.selectedWeather = w;
+        renderInspector();
+      }
+    })
+    .catch(() => {});
 
   try {
     const res = await fetch(`/api/vessel/${encodeURIComponent(mmsi)}`);
@@ -476,6 +504,7 @@ function connectStream() {
 
 setInterval(() => {
   dom.utcClock.textContent = new Date().toISOString().slice(11, 19);
+  checkFavoriteAlerts(state.vesselsMap, state.favorites);
   if (state.dirtyUi) {
     state.dirtyUi = false;
     state.allVessels = Array.from(state.vesselsMap.values());

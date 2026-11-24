@@ -57,6 +57,30 @@ export function initialBearing(lat1, lon1, lat2, lon2) {
 }
 
 /**
+ * Compute destination (lat, lon) starting from (lat, lon) traveling `distanceNm`
+ * nautical miles along initial true bearing `bearingDeg` on a sphere.
+ */
+export function destinationPoint(lat, lon, bearingDeg, distanceNm) {
+  const delta = distanceNm / EARTH_RADIUS_NM;
+  const theta = bearingDeg * DEG2RAD;
+  const phi1 = lat * DEG2RAD;
+  const lam1 = lon * DEG2RAD;
+
+  const sinPhi2 =
+    Math.sin(phi1) * Math.cos(delta) +
+    Math.cos(phi1) * Math.sin(delta) * Math.cos(theta);
+  const phi2 = Math.asin(Math.max(-1, Math.min(1, sinPhi2)));
+  const y = Math.sin(theta) * Math.sin(delta) * Math.cos(phi1);
+  const x = Math.cos(delta) - Math.sin(phi1) * sinPhi2;
+  const lam2 = lam1 + Math.atan2(y, x);
+
+  return {
+    lat: clampLat(phi2 * RAD2DEG),
+    lon: normalizeLon(lam2 * RAD2DEG),
+  };
+}
+
+/**
  * Spherical linear interpolation (SLERP) between two geographic coordinates.
  * @param {number} lat1
  * @param {number} lon1

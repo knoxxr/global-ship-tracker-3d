@@ -7,7 +7,7 @@
  * Delegates shared UI state/controls to ./ui-controller.js.
  */
 
-import { GlobeEngine } from './globe-engine.js?v=0935f1a7';
+import { GlobeEngine } from './globe-engine.js?v=06d7d74e';
 import { LIVE_ZONES, buildBboxAround, getViewportMvtTiles } from './live-zones.js';
 import { decodeMvtPoints } from './mvt-decoder.js';
 import {
@@ -15,14 +15,14 @@ import {
   checkThrottledResponse,
   readBrowserCache,
   writeBrowserCache,
-} from './api-guard.js?v=0935f1a7';
+} from './api-guard.js?v=06d7d74e';
 import {
   parseOpenWatersEvent,
   parseOpenWatersFeature,
   parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
-} from './ais-parser.js?v=0935f1a7';
+} from './ais-parser.js?v=06d7d74e';
 import {
   formatCoordShort,
   sortVessels,
@@ -32,7 +32,7 @@ import {
   renderVirtualVesselList,
   renderInspectorBodyHtml,
   renderVirtualFleetTable,
-} from './telemetry-ui.js?v=0935f1a7';
+} from './telemetry-ui.js?v=06d7d74e';
 import {
   isMobileViewport,
   loadPrefs,
@@ -40,13 +40,16 @@ import {
   parseHashDeepLink,
   createToast,
   queryCommonDom,
+  fetchMarineWeather,
+  createFavoriteMonitor,
+  renderPortFilterBanner,
   buildFilterChipsHtml,
   filterVesselsList,
   filterAndSortTableVessels,
   updateTableSortIndicators,
   bindSharedUi,
   registerAppServiceWorker,
-} from './ui-controller.js?v=0935f1a7';
+} from './ui-controller.js?v=06d7d74e';
 
 const MAX_VESSELS = 80000;
 const TRACK_CACHE_MS = 10 * 60 * 1000;
@@ -60,6 +63,9 @@ const savedPrefs = loadPrefs();
 const deepLink = parseHashDeepLink();
 const urlParams = new URLSearchParams(window.location.search);
 const queryBackendUrl = (urlParams.get('backend') || '').trim().replace(/\/+$/, '');
+const queryRelayUrl = (urlParams.get('relay') || '').trim().replace(/\/+$/, '');
+const OPENWATERS_HTTP_BASE =
+  queryRelayUrl && /^https?:\/\//.test(queryRelayUrl) ? queryRelayUrl : 'https://ais.openwaters.io';
 
 async function runPool(items, concurrency, fn) {
   let idx = 0;
@@ -107,6 +113,8 @@ const state = {
   filteredVessels: [],
   tableVessels: [],
   selectedMmsi: null,
+  selectedWeather: null,
+  portFilter: null,
   pendingDeepLinkMmsi: deepLink.mmsi || null,
   loadingDetailsMmsi: null,
   followSelected: false,
@@ -129,6 +137,13 @@ const dom = {
 };
 
 const showToast = createToast(dom.toastNotice);
+const checkFavoriteAlerts = createFavoriteMonitor((ev) => {
+  showToast(
+    ev.type === 'departed'
+      ? `★ ${ev.name} 출항 감지 (${ev.sog.toFixed(1)} kn)`
+      : `★ ${ev.name} 정박/감속 감지 (${ev.sog.toFixed(1)} kn)`
+  );
+});
 
 // Paced token bucket + 429/503 Retry-After circuit breaker + in-flight deduplication
 const apiGuard = new ApiRateGuard({
@@ -385,7 +400,7 @@ async function fetchOpenWatersBbox(bbox) {
     kind: 'vessel',
   });
   if (state.openWatersToken) params.set('key', state.openWatersToken);
-  const url = `https://ais.openwaters.io/v1/vessels?${params}`;
+  const url = `${OPENWATERS_HTTP_BASE}/v1/vessels?${params}`;
 
   // Reuse short-TTL Browser Cache API entry across page reloads with 0 network calls
   const cachedRes = await readBrowserCache(AIS_HTTP_CACHE, url, BBOX_CACHE_MS);
@@ -434,7 +449,7 @@ async function fetchOpenWatersTile(z, x, y) {
   const key = `tile:${z}/${x}/${y}`;
   const params = new URLSearchParams({ kind: 'vessel' });
   if (state.openWatersToken) params.set('key', state.openWatersToken);
-  const url = `https://ais.openwaters.io/v1/vessels/tiles/${z}/${x}/${y}?${params}`;
+  const url = `${OPENWATERS_HTTP_BASE}/v1/vessels/tiles/${z}/${x}/${y}?${params}`;
 
   const cachedRes = await readBrowserCache(AIS_HTTP_CACHE, url, TILE_CACHE_MS);
   if (cachedRes) {
@@ -914,13 +929,18 @@ function renderInspector() {
   const prevScroll = dom.inspector.scrollTop;
   dom.inspector.classList.remove('hidden');
   document.body.classList.add('inspector-open');
-  dom.inspector.innerHTML = renderInspectorBodyHtml(
+  const nextHtml = renderInspectorBodyHtml(
     v,
     state.followSelected,
     state.loadingDetailsMmsi === v.mmsi,
-    state.favorites.has(v.mmsi)
+    state.favorites.has(v.mmsi),
+    state.selectedWeather
   );
-  dom.inspector.scrollTop = prevScroll;
+  if (dom.inspector._lastHtml !== nextHtml) {
+    dom.inspector._lastHtml = nextHtml;
+    dom.inspector.innerHTML = nextHtml;
+    dom.inspector.scrollTop = prevScroll;
+  }
 }
 
 function syncFromMap() {
@@ -944,6 +964,7 @@ function applyFiltersAndRender() {
   dom.fleetSummary.innerHTML = renderFleetSummaryHtml(state.filteredVessels);
   dom.filteredCount.textContent = `실시간 수신: ${countStr}척`;
 
+  renderPortFilterBanner(dom.portFilterBanner, state.portFilter, state.filteredVessels);
   dom.filterGrid.innerHTML = buildFilterChipsHtml(state.allVessels, state.activeType, state.favorites);
   renderVisibleList();
   renderInspector();
@@ -982,7 +1003,7 @@ async function loadVisibleTracks(maxCount = 18) {
         }
       } else {
         await apiGuard.run(`track:${v.mmsi}`, { ttlMs: TRACK_CACHE_MS, cacheNullish: true }, async () => {
-          const res = await fetch(`https://ais.openwaters.io/v1/vessels/${encodeURIComponent(v.mmsi)}/track${q}`);
+          const res = await fetch(`${OPENWATERS_HTTP_BASE}/v1/vessels/${encodeURIComponent(v.mmsi)}/track${q}`);
           checkThrottledResponse(apiGuard, res);
           if (!res.ok) return null;
           const geo = await res.json();
@@ -1022,6 +1043,7 @@ const ui = bindSharedUi({
 
 async function selectVessel(mmsi, fly = false) {
   state.selectedMmsi = mmsi;
+  state.selectedWeather = null;
   const v = state.vesselsMap.get(mmsi);
   if (!v) return;
 
@@ -1034,6 +1056,16 @@ async function selectVessel(mmsi, fly = false) {
   state.loadingDetailsMmsi = mmsi;
   renderVisibleList();
   renderInspector();
+
+  // Fetch live marine weather (wave height, wind, sea temp) asynchronously with 10-min cache
+  fetchMarineWeather(v.lat, v.lon)
+    .then((w) => {
+      if (state.selectedMmsi === mmsi && w) {
+        state.selectedWeather = w;
+        renderInspector();
+      }
+    })
+    .catch(() => {});
 
   try {
     if (state.provider === 'remote-sse' && state.backendUrl) {
@@ -1054,8 +1086,8 @@ async function selectVessel(mmsi, fly = false) {
       { ttlMs: VESSEL_DETAIL_CACHE_MS },
       async () => {
         const [detailRes, trackRes] = await Promise.allSettled([
-          fetch(`https://ais.openwaters.io/v1/vessels/${encodeURIComponent(mmsi)}${q}`),
-          fetch(`https://ais.openwaters.io/v1/vessels/${encodeURIComponent(mmsi)}/track${q}`),
+          fetch(`${OPENWATERS_HTTP_BASE}/v1/vessels/${encodeURIComponent(mmsi)}${q}`),
+          fetch(`${OPENWATERS_HTTP_BASE}/v1/vessels/${encodeURIComponent(mmsi)}/track${q}`),
         ]);
         if (detailRes.status === 'fulfilled') checkThrottledResponse(apiGuard, detailRes.value);
         if (trackRes.status === 'fulfilled') checkThrottledResponse(apiGuard, trackRes.value);
@@ -1179,12 +1211,13 @@ dom.btnSaveApi.addEventListener('click', () => {
   else startOpenWaters();
 });
 
-// Throttled 2s UI sync + multi-tab delta flush
+// Throttled 2s UI sync + multi-tab delta flush + favorite status alerts
 setInterval(() => {
   state.msgPerSec = state.msgCounter;
   state.msgCounter = 0;
   dom.utcClock.textContent = new Date().toISOString().slice(11, 19);
   flushTabDelta();
+  checkFavoriteAlerts(state.vesselsMap, state.favorites);
   if (state.dirtyUi) {
     state.dirtyUi = false;
     syncFromMap();
@@ -1213,7 +1246,7 @@ if (state.pendingDeepLinkMmsi && !queryBackendUrl) {
   const q = state.openWatersToken ? `?key=${encodeURIComponent(state.openWatersToken)}` : '';
   apiGuard
     .run(`deep:${mmsi}`, { ttlMs: VESSEL_DETAIL_CACHE_MS }, async () => {
-      const r = await fetch(`https://ais.openwaters.io/v1/vessels/${encodeURIComponent(mmsi)}${q}`);
+      const r = await fetch(`${OPENWATERS_HTTP_BASE}/v1/vessels/${encodeURIComponent(mmsi)}${q}`);
       checkThrottledResponse(apiGuard, r);
       return r.ok ? r.json() : null;
     })

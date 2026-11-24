@@ -244,7 +244,13 @@ export function renderVirtualVesselList(
 /**
  * Renders 100% real AIS telemetry inside the right-hand inspector panel.
  */
-export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = false, isFavorite = false) {
+export function renderInspectorBodyHtml(
+  v,
+  followSelected,
+  isLoadingDetails = false,
+  isFavorite = false,
+  marineWeather = null
+) {
   const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
   const kmh = ((Number(v.sog) || 0) * 1.852).toFixed(1);
   const updatedStr = v.updatedAt ? new Date(v.updatedAt).toISOString().slice(11, 19) + ' UTC' : '-';
@@ -345,6 +351,25 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
       </div>
     </div>
 
+    ${
+      marineWeather
+        ? `
+    <div class="section-label">실시간 해상 기상 (Open-Meteo Marine)</div>
+    <div class="kv-grid">
+      <div class="kv-cell">
+        <div class="kv-label">유의파고 / 파주기</div>
+        <div class="kv-value mono">${marineWeather.waveHeight != null ? `${marineWeather.waveHeight.toFixed(1)} m` : '-'}</div>
+        <div class="kv-sub mono">${marineWeather.wavePeriod != null ? `주기 ${marineWeather.wavePeriod.toFixed(1)}s` : '해역 데이터'} ${marineWeather.waveDir != null ? `· ${Math.round(marineWeather.waveDir)}° ${compass16(marineWeather.waveDir)}` : ''}</div>
+      </div>
+      <div class="kv-cell">
+        <div class="kv-label">해상 풍속 / 수온</div>
+        <div class="kv-value mono">${marineWeather.windKn != null ? `${marineWeather.windKn.toFixed(1)} kn` : '-'} ${marineWeather.windDir != null ? compass16(marineWeather.windDir) : ''}</div>
+        <div class="kv-sub mono">${marineWeather.seaTemp != null ? `해수온 ${marineWeather.seaTemp.toFixed(1)}°C` : '실시간 기상'}</div>
+      </div>
+    </div>`
+        : ''
+    }
+
     <div class="section-label">수신 기지국 및 출처 (Feed Provenance)</div>
     <div class="kv-grid">
       <div class="kv-cell full">
@@ -362,6 +387,7 @@ export function renderInspectorBodyHtml(v, followSelected, isLoadingDetails = fa
         ${followSelected ? '추적 잠금 해제' : '카메라 추적 잠금'}
       </button>
       <button id="btn-center-vessel" class="btn">위치로 이동</button>
+      <button id="btn-measure-from-vessel" class="btn btn-icon" title="이 선박에서 거리·ETA 측정" aria-label="이 선박에서 거리 측정">📏</button>
       <button id="btn-share-vessel" class="btn btn-icon" title="이 선박 링크 복사" aria-label="선박 링크 복사">🔗</button>
     </div>
   `;

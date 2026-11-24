@@ -4,7 +4,7 @@
  * while strictly bypassing all live AIS API / WebSocket / SSE traffic (100% live data).
  */
 
-const CACHE_NAME = 'marineglobe-shell-0935f1a7';
+const CACHE_NAME = 'marineglobe-shell-06d7d74e';
 const PRECACHE_URLS = [
   './',
   './manifest.webmanifest',

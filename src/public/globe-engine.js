@@ -102,6 +102,59 @@ function formatClusterCount(n) {
   return String(n);
 }
 
+const EARTH_RADIUS_NM = 3440.065;
+
+function _haversineNm(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * DEG2RAD;
+  const p2 = lat2 * DEG2RAD;
+  const dp = (lat2 - lat1) * DEG2RAD;
+  const dl = (lon2 - lon1) * DEG2RAD;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return EARTH_RADIUS_NM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+}
+
+function _initialBearing(lat1, lon1, lat2, lon2) {
+  const p1 = lat1 * DEG2RAD;
+  const p2 = lat2 * DEG2RAD;
+  const dl = (lon2 - lon1) * DEG2RAD;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) * RAD2DEG + 360) % 360;
+}
+
+function _destinationPoint(lat, lon, bearingDeg, distanceNm) {
+  const delta = distanceNm / EARTH_RADIUS_NM;
+  const theta = bearingDeg * DEG2RAD;
+  const p1 = lat * DEG2RAD;
+  const l1 = lon * DEG2RAD;
+  const sinP2 = Math.sin(p1) * Math.cos(delta) + Math.cos(p1) * Math.sin(delta) * Math.cos(theta);
+  const p2 = Math.asin(Math.max(-1, Math.min(1, sinP2)));
+  const y = Math.sin(theta) * Math.sin(delta) * Math.cos(p1);
+  const x = Math.cos(delta) - Math.sin(p1) * sinP2;
+  let lon2 = ((l1 + Math.atan2(y, x)) * RAD2DEG + 180) % 360;
+  if (lon2 < 0) lon2 += 360;
+  return { lat: Math.max(-85, Math.min(85, p2 * RAD2DEG)), lon: lon2 - 180 };
+}
+
+function _slerpLatLon(lat1, lon1, lat2, lon2, t) {
+  if (t <= 0) return { lat: lat1, lon: lon1 };
+  if (t >= 1) return { lat: lat2, lon: lon2 };
+  const p1 = lat1 * DEG2RAD;
+  const l1 = lon1 * DEG2RAD;
+  const p2 = lat2 * DEG2RAD;
+  const l2 = lon2 * DEG2RAD;
+  const x1 = Math.cos(p1) * Math.cos(l1), y1 = Math.cos(p1) * Math.sin(l1), z1 = Math.sin(p1);
+  const x2 = Math.cos(p2) * Math.cos(l2), y2 = Math.cos(p2) * Math.sin(l2), z2 = Math.sin(p2);
+  const dot = Math.max(-1, Math.min(1, x1 * x2 + y1 * y2 + z1 * z2));
+  const omega = Math.acos(dot);
+  if (omega < 1e-6) return { lat: lat1 + (lat2 - lat1) * t, lon: lon1 + (lon2 - lon1) * t };
+  const s = Math.sin(omega);
+  const w1 = Math.sin((1 - t) * omega) / s;
+  const w2 = Math.sin(t * omega) / s;
+  const x = w1 * x1 + w2 * x2, y = w1 * y1 + w2 * y2, z = w1 * z1 + w2 * z2;
+  return { lat: Math.atan2(z, Math.sqrt(x * x + y * y)) * RAD2DEG, lon: Math.atan2(y, x) * RAD2DEG };
+}
+
 export class GlobeEngine {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
@@ -110,6 +163,8 @@ export class GlobeEngine {
     this.onHoverVessel = options.onHoverVessel || (() => {});
     this.onHoverCluster = options.onHoverCluster || (() => {});
     this.onCameraChange = options.onCameraChange || (() => {});
+    this.onSelectPort = options.onSelectPort || (() => {});
+    this.onMeasureChange = options.onMeasureChange || (() => {});
 
     // Camera state (degrees) — deep zoom up to 1500x (harbor & terminal level!)
     this.centerLat = options.initialLat ?? 28;
@@ -130,6 +185,12 @@ export class GlobeEngine {
     this._pinchDist = 0;
     this._pinchMid = { x: 0, y: 0 };
     this._lastTouchTap = { time: 0, x: 0, y: 0 };
+
+    // Great-circle ruler & port geofence filter states
+    this.measureMode = false;
+    this.measurePoints = []; // [{ lat, lon, label?, speedKn? }]
+    this.activePortFilter = null; // { name, lat, lon, radiusNm }
+    this.screenPorts = [];
 
     // Layer toggles
     this.options = {
@@ -570,13 +631,38 @@ export class GlobeEngine {
       const wasPinching = this.isPinching;
       this.isDragging = false;
       this.isPinching = false;
-      this.canvas.style.cursor = this.hoveredMmsi || this.hoveredClusterId ? 'pointer' : 'grab';
+      this.canvas.style.cursor = this.measureMode
+        ? 'crosshair'
+        : this.hoveredMmsi || this.hoveredClusterId
+          ? 'pointer'
+          : 'grab';
 
       if (!this.dragMoved && !wasPinching && e.type === 'pointerup') {
         const rect = this.canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
         const isTouch = e.pointerType === 'touch';
+
+        // Great-circle distance/bearing/ETA ruler clicks
+        if (this.measureMode) {
+          const hitVessel = this._pickVessel(mx, my, isTouch);
+          const hitPort = !hitVessel ? this._pickPort(mx, my, isTouch) : null;
+          const pos = hitVessel
+            ? { lat: hitVessel.lat, lon: hitVessel.lon, label: hitVessel.name, speedKn: hitVessel.sog || 0 }
+            : hitPort
+              ? { lat: hitPort.lat, lon: hitPort.lon, label: hitPort.name }
+              : this.screenToLatLon(mx, my);
+          if (pos) {
+            if (this.measurePoints.length >= 2) {
+              this.measurePoints = [pos];
+            } else {
+              this.measurePoints.push(pos);
+            }
+            this._dirty = true;
+            this._notifyMeasure();
+          }
+          return;
+        }
 
         // Tapping/clicking a cluster smoothly zooms into it
         const cluster = this._pickCluster(mx, my, isTouch);
@@ -590,6 +676,13 @@ export class GlobeEngine {
         const hit = this._pickVessel(mx, my, isTouch);
         if (hit) {
           this.onSelectVessel(hit);
+          return;
+        }
+
+        // Clicking a major port opens the 15NM port control filter
+        const port = this._pickPort(mx, my, isTouch);
+        if (port) {
+          this.onSelectPort(port);
           return;
         }
 
@@ -934,13 +1027,23 @@ export class GlobeEngine {
       this._drawCorridors(ctx, P, sinPhi0, cosPhi0, lam0);
     }
 
-    // 10. Major Ports
+    // 10. Major Ports & Optional 15NM Port Geofence Ring
     if (this.options.showPorts) {
       this._drawPorts(ctx, P, sinPhi0, cosPhi0, lam0, sunVec);
+    } else {
+      this.screenPorts = [];
+    }
+    if (this.activePortFilter) {
+      this._drawPortRadiusRing(ctx, P, sinPhi0, cosPhi0, lam0);
     }
 
     // 11. Vessels, Smart Clusters & Gradient AIS Tracks
     this._drawVesselsAndClusters(ctx, P, sinPhi0, cosPhi0, lam0, ts);
+
+    // 11.5. Great-Circle Distance, Bearing & ETA Ruler Overlay
+    if (this.measurePoints.length > 0) {
+      this._drawMeasureOverlay(ctx, P, sinPhi0, cosPhi0, lam0);
+    }
 
     ctx.restore(); // End sphere clip
 
@@ -1385,6 +1488,7 @@ export class GlobeEngine {
   }
 
   _drawPorts(ctx, P, sinPhi0, cosPhi0, lam0, sunVec) {
+    this.screenPorts = [];
     ctx.font = '500 10.5px system-ui, -apple-system, sans-serif';
     ctx.textBaseline = 'middle';
     const placed = [];
@@ -1394,25 +1498,27 @@ export class GlobeEngine {
       const p = this.projectRad(port.lat * DEG2RAD, port.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
       if (p.z < 0.14 || p.sx < -20 || p.sx > this.width + 20 || p.sy < -20 || p.sy > this.height + 20) continue;
 
+      const isActivePort = this.activePortFilter && this.activePortFilter.name === port.name;
       const pv = latLonToVec3(port.lat, port.lon);
       const sunDot = pv[0] * sunVec[0] + pv[1] * sunVec[1] + pv[2] * sunVec[2];
       const isNight = this.options.showDayNight && sunDot < -0.05;
 
-      ctx.fillStyle = isNight ? '#fbbf24' : P.portDot;
+      ctx.fillStyle = isActivePort ? '#38bdf8' : isNight ? '#fbbf24' : P.portDot;
       ctx.beginPath();
-      ctx.arc(p.sx, p.sy, 2.4, 0, Math.PI * 2);
+      ctx.arc(p.sx, p.sy, isActivePort ? 3.8 : 2.4, 0, Math.PI * 2);
       ctx.fill();
 
       const tw = ctx.measureText(port.name).width + 6;
       const lx = p.sx + 5;
       const ly = p.sy - 7;
-      if (placed.some((r) => lx < r.x + r.w && lx + tw > r.x && ly < r.y + r.h && ly + 14 > r.y)) {
+      this.screenPorts.push({ port, sx: p.sx, sy: p.sy, lx, ly, w: tw, h: 14 });
+      if (!isActivePort && placed.some((r) => lx < r.x + r.w && lx + tw > r.x && ly < r.y + r.h && ly + 14 > r.y)) {
         continue;
       }
       placed.push({ x: lx, y: ly, w: tw, h: 14 });
-      ctx.fillStyle = P.portLabelBg;
+      ctx.fillStyle = isActivePort ? 'rgba(14, 165, 233, 0.28)' : P.portLabelBg;
       ctx.fillRect(lx - 2, ly, tw, 14);
-      ctx.fillStyle = P.portLabel;
+      ctx.fillStyle = isActivePort ? '#38bdf8' : P.portLabel;
       ctx.fillText(port.name, lx + 1, p.sy);
     }
   }
@@ -1664,6 +1770,10 @@ export class GlobeEngine {
       ctx.stroke();
       ctx.restore();
 
+      if (item.isSelected && (v.sog || 0) >= 0.5) {
+        this._drawPredictedCourse(ctx, v, meta.color, P, sinPhi0, cosPhi0, lam0);
+      }
+
       if (item.isSelected) {
         const pulse = (ts % 1600) / 1600;
         ctx.strokeStyle = meta.color;
@@ -1780,6 +1890,285 @@ export class GlobeEngine {
     ctx.lineTo(tailX, tailY);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /**
+   * Dead Reckoning 15m / 30m / 60m predicted course vector for selected moving vessel.
+   */
+  _drawPredictedCourse(ctx, v, color, P, sinPhi0, cosPhi0, lam0) {
+    const sog = Number(v.sog) || 0;
+    const cog = Number(v.cog) || 0;
+    if (sog < 0.5) return;
+
+    const p0 = this.projectRad(v.lat * DEG2RAD, v.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+    const p60 = _destinationPoint(v.lat, v.lon, cog, sog);
+    const s60 = this.projectRad(p60.lat * DEG2RAD, p60.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+    if (p0.z <= 0.02 || s60.z <= 0.02) return;
+    if (Math.hypot(s60.sx - p0.sx, s60.sy - p0.sy) < 14) return;
+
+    const p15 = _destinationPoint(v.lat, v.lon, cog, sog * 0.25);
+    const p30 = _destinationPoint(v.lat, v.lon, cog, sog * 0.5);
+    const s15 = this.projectRad(p15.lat * DEG2RAD, p15.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+    const s30 = this.projectRad(p30.lat * DEG2RAD, p30.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.82;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(p0.sx, p0.sy);
+    ctx.lineTo(s15.sx, s15.sy);
+    ctx.lineTo(s30.sx, s30.sy);
+    ctx.lineTo(s60.sx, s60.sy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const marks = [
+      { pt: s15, label: '+15m' },
+      { pt: s30, label: '+30m' },
+      { pt: s60, label: '+60m' },
+    ];
+    ctx.font = '600 9.5px ui-monospace, SFMono-Regular, monospace';
+    ctx.textBaseline = 'middle';
+    let lastX = p0.sx;
+    let lastY = p0.sy;
+    for (const m of marks) {
+      if (m.pt.z <= 0.02) continue;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(m.pt.sx, m.pt.sy, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+      if (Math.hypot(m.pt.sx - lastX, m.pt.sy - lastY) >= 26) {
+        const tw = ctx.measureText(m.label).width + 6;
+        ctx.fillStyle = P.calloutBg;
+        ctx.fillRect(m.pt.sx + 5, m.pt.sy - 7, tw, 13);
+        ctx.fillStyle = color;
+        ctx.fillText(m.label, m.pt.sx + 8, m.pt.sy);
+        lastX = m.pt.sx;
+        lastY = m.pt.sy;
+      }
+    }
+    ctx.restore();
+  }
+
+  /**
+   * 15NM spherical geofence ring around the active port filter.
+   */
+  _drawPortRadiusRing(ctx, P, sinPhi0, cosPhi0, lam0) {
+    const pf = this.activePortFilter;
+    if (!pf) return;
+    const radiusNm = pf.radiusNm || 15;
+    const steps = 48;
+    ctx.save();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.10)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i <= steps; i++) {
+      const b = (i / steps) * 360;
+      const pt = _destinationPoint(pf.lat, pf.lon, b, radiusNm);
+      const sp = this.projectRad(pt.lat * DEG2RAD, pt.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      if (sp.z <= 0.02) continue;
+      if (!started) {
+        ctx.moveTo(sp.sx, sp.sy);
+        started = true;
+      } else {
+        ctx.lineTo(sp.sx, sp.sy);
+      }
+    }
+    if (started) {
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    const topPt = _destinationPoint(pf.lat, pf.lon, 0, radiusNm);
+    const spTop = this.projectRad(topPt.lat * DEG2RAD, topPt.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+    if (spTop.z > 0.05) {
+      const label = `${pf.name} · ${radiusNm}NM 관제권`;
+      ctx.font = '600 10.5px system-ui, -apple-system, sans-serif';
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = P.calloutBg;
+      ctx.beginPath();
+      ctx.roundRect(spTop.sx - tw / 2, spTop.sy - 18, tw, 17, 4);
+      ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#38bdf8';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, spTop.sx, spTop.sy - 9.5);
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Great-circle distance, true bearing, and live-speed ETA ruler overlay.
+   */
+  _drawMeasureOverlay(ctx, P, sinPhi0, cosPhi0, lam0) {
+    const pts = this.measurePoints;
+    if (!pts.length) return;
+
+    ctx.save();
+    if (pts.length === 2) {
+      const [a, b] = pts;
+      const nm = _haversineNm(a.lat, a.lon, b.lat, b.lon);
+      const km = nm * 1.852;
+      const brg = _initialBearing(a.lat, a.lon, b.lat, b.lon);
+      const segs = Math.max(16, Math.min(64, Math.ceil(nm / 40)));
+
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2.2;
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      let drawing = false;
+      for (let i = 0; i <= segs; i++) {
+        const p = _slerpLatLon(a.lat, a.lon, b.lat, b.lon, i / segs);
+        const sp = this.projectRad(p.lat * DEG2RAD, p.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+        if (sp.z > 0.02) {
+          if (!drawing) { ctx.moveTo(sp.sx, sp.sy); drawing = true; }
+          else ctx.lineTo(sp.sx, sp.sy);
+        } else {
+          drawing = false;
+        }
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const mid = _slerpLatLon(a.lat, a.lon, b.lat, b.lon, 0.5);
+      const sMid = this.projectRad(mid.lat * DEG2RAD, mid.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      if (sMid.z > 0.02) {
+        const speedKn = a.speedKn && a.speedKn >= 0.5 ? a.speedKn : 0;
+        let etaStr = '';
+        if (speedKn > 0) {
+          const hrs = nm / speedKn;
+          const d = Math.floor(hrs / 24);
+          const h = Math.floor(hrs % 24);
+          const m = Math.round((hrs - Math.floor(hrs)) * 60);
+          etaStr = d > 0 ? ` · ETA ${d}d ${h}h (${speedKn}kn)` : ` · ETA ${h}h ${m}m (${speedKn}kn)`;
+        }
+        const badge = `${nm.toFixed(1)} NM (${km.toFixed(1)} km) · ${Math.round(brg)}°${etaStr}`;
+        ctx.font = '600 11px ui-monospace, SFMono-Regular, monospace';
+        const tw = ctx.measureText(badge).width + 16;
+        const bx = Math.max(10, Math.min(this.width - tw - 10, sMid.sx - tw / 2));
+        const by = Math.max(76, Math.min(this.height - 64, sMid.sy - 26));
+        ctx.fillStyle = P.calloutBg;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, tw, 24, 6);
+        ctx.fill();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.3;
+        ctx.stroke();
+        ctx.fillStyle = '#fbbf24';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badge, bx + 8, by + 12);
+      }
+    }
+
+    // Draw A / B endpoint pins
+    pts.forEach((pt, idx) => {
+      const sp = this.projectRad(pt.lat * DEG2RAD, pt.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      if (sp.z <= 0.02) return;
+      ctx.fillStyle = '#f59e0b';
+      ctx.beginPath();
+      ctx.arc(sp.sx, sp.sy, 6.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.fillStyle = '#04101d';
+      ctx.font = '700 9.5px ui-monospace, SFMono-Regular, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(idx === 0 ? 'A' : 'B', sp.sx, sp.sy + 0.5);
+    });
+    ctx.restore();
+  }
+
+  _pickPort(mx, my, isTouch = false) {
+    if (!this.options.showPorts || !this.screenPorts.length) return null;
+    const pad = isTouch ? 14 : 7;
+    let best = null;
+    let bestDist = Infinity;
+    for (const sp of this.screenPorts) {
+      const inLabel =
+        mx >= sp.lx - pad && mx <= sp.lx + sp.w + pad && my >= sp.ly - pad && my <= sp.ly + sp.h + pad;
+      const dist = Math.hypot(mx - sp.sx, my - sp.sy);
+      if (dist <= (isTouch ? 20 : 11) || inLabel) {
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = sp.port;
+        }
+      }
+    }
+    return best;
+  }
+
+  setMeasureMode(enabled, anchorPoint = null) {
+    this.measureMode = Boolean(enabled);
+    this.measurePoints = this.measureMode && anchorPoint ? [anchorPoint] : [];
+    this.canvas.style.cursor = this.measureMode ? 'crosshair' : 'grab';
+    this._dirty = true;
+    this._notifyMeasure();
+  }
+
+  clearMeasure() {
+    this.measureMode = false;
+    this.measurePoints = [];
+    this.canvas.style.cursor = 'grab';
+    this._dirty = true;
+    this._notifyMeasure();
+  }
+
+  _notifyMeasure() {
+    if (this.measurePoints.length === 2) {
+      const [a, b] = this.measurePoints;
+      const nm = _haversineNm(a.lat, a.lon, b.lat, b.lon);
+      const brg = _initialBearing(a.lat, a.lon, b.lat, b.lon);
+      this.onMeasureChange({ mode: this.measureMode, points: this.measurePoints, nm, km: nm * 1.852, bearing: brg });
+    } else {
+      this.onMeasureChange({ mode: this.measureMode, points: this.measurePoints, nm: null, km: null, bearing: null });
+    }
+  }
+
+  setActivePortFilter(port) {
+    this.activePortFilter = port ? { ...port, radiusNm: port.radiusNm || 15 } : null;
+    this._dirty = true;
+  }
+
+  /**
+   * Export current 3D globe canvas as a high-DPI PNG data URL with UTC timestamp watermark.
+   */
+  exportPngDataUrl() {
+    this.render(performance.now());
+    const out = document.createElement('canvas');
+    out.width = this.canvas.width;
+    out.height = this.canvas.height;
+    const octx = out.getContext('2d');
+    octx.drawImage(this.canvas, 0, 0);
+    const dpr = this.dpr || 1;
+    const stamp = `MarineGlobe 3D · 100% Live AIS · ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+    octx.save();
+    octx.scale(dpr, dpr);
+    octx.font = '600 11px ui-monospace, SFMono-Regular, monospace';
+    const tw = octx.measureText(stamp).width + 16;
+    const x = this.width - tw - 14;
+    const y = this.height - 32;
+    octx.fillStyle = 'rgba(4, 11, 20, 0.78)';
+    octx.beginPath();
+    octx.roundRect(x, y, tw, 22, 5);
+    octx.fill();
+    octx.fillStyle = '#38bdf8';
+    octx.textBaseline = 'middle';
+    octx.fillText(stamp, x + 8, y + 11);
+    octx.restore();
+    return out.toDataURL('image/png');
   }
 
   _drawShipGlyph(ctx, x, y, angle, size, color, emphasized) {
