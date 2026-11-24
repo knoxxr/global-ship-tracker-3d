@@ -115,24 +115,24 @@ const globe = new GlobeEngine(dom.canvas, {
   },
   onCameraChange: ({ lat, lon, zoom }) => {
     dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom >= 100 ? Math.round(zoom) : zoom.toFixed(1)}x`;
-    if (zoom >= 3.0) {
+    if (zoom >= 2.0) {
       const distDeg = Math.hypot(lat - lastAutoViewportCenter.lat, lon - lastAutoViewportCenter.lon);
-      if (distDeg >= 2.5) {
+      if (distDeg >= 1.8 || zoom >= 6.0) {
         clearTimeout(autoViewportTimer);
         autoViewportTimer = setTimeout(() => {
           const now = Date.now();
-          if (now - lastAutoViewportAt < 6000) return;
+          if (now - lastAutoViewportAt < 4000) return;
           lastAutoViewportAt = now;
           lastAutoViewportCenter = { lat: globe.centerLat, lon: globe.centerLon };
-          const half = 4.5;
-          const bbox = [
-            Math.max(-85, Number((globe.centerLat - half).toFixed(2))),
-            Math.max(-180, Number((globe.centerLon - half).toFixed(2))),
-            Math.min(85, Number((globe.centerLat + half).toFixed(2))),
-            Math.min(180, Number((globe.centerLon + half).toFixed(2))),
-          ];
-          postConfig({ bbox, bboxOnly: true }).catch(() => {});
-        }, 1800);
+          const span = globe.getViewportSpanDeg();
+          postViewport({
+            lat: globe.centerLat,
+            lon: globe.centerLon,
+            zoom: globe.zoom,
+            halfLat: span.halfLat,
+            halfLon: span.halfLon,
+          }).catch(() => {});
+        }, 900);
       }
     }
     if (zoom >= 2.8 && globe.options.showWakes) {
@@ -142,8 +142,8 @@ const globe = new GlobeEngine(dom.canvas, {
         lastAutoTrackKey = key;
         clearTimeout(autoTrackTimer);
         autoTrackTimer = setTimeout(() => {
-          loadVisibleTracks(18).catch(() => {});
-        }, 900);
+          loadVisibleTracks(12).catch(() => {});
+        }, 1200);
       }
     }
   },
@@ -168,7 +168,7 @@ function renderPresets() {
     btn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
     globe.setSelectedVessel(state.selectedMmsi, false);
     globe.flyTo(preset.lat, preset.lon, preset.zoom, 800);
-    await postConfig({ zoneId: preset.id, bboxOnly: true });
+    await postViewport({ lat: preset.lat, lon: preset.lon, zoom: preset.zoom, halfLat: 5, halfLon: 7 });
   });
 }
 
@@ -267,7 +267,7 @@ async function loadVisibleTracks(maxCount = 24) {
   let done = 0;
 
   try {
-    await runPool(targets, 3, async (v) => {
+    await runPool(targets, 2, async (v) => {
       state.trackFetchedAt.set(v.mmsi, Date.now());
       const res = await fetch(`/api/vessel/${encodeURIComponent(v.mmsi)}`);
       if (res.ok) {
@@ -337,14 +337,22 @@ dom.btnScanView.addEventListener('click', async () => {
   const half = 4.5;
   const lat = globe.centerLat;
   const lon = globe.centerLon;
+  const span = globe.getViewportSpanDeg();
   const bbox = [
     Math.max(-85, Number((lat - half).toFixed(2))),
     Math.max(-180, Number((lon - half).toFixed(2))),
     Math.min(85, Number((lat + half).toFixed(2))),
     Math.min(180, Number((lon + half).toFixed(2))),
   ];
-  await postConfig({ bbox, bboxOnly: true });
-  await loadVisibleTracks(18);
+  await postViewport({
+    lat,
+    lon,
+    zoom: Math.max(globe.zoom, 7.0),
+    halfLat: span.halfLat,
+    halfLon: span.halfLon,
+    bbox,
+  });
+  await loadVisibleTracks(12);
 });
 
 if (dom.btnLoadTracks) {
@@ -352,7 +360,7 @@ if (dom.btnLoadTracks) {
     globe.setOption('showWakes', true);
     if (dom.btnWakes) dom.btnWakes.classList.add('active');
     savePrefs();
-    loadVisibleTracks(24).catch(() => {});
+    loadVisibleTracks(18).catch(() => {});
   });
 }
 
@@ -384,6 +392,18 @@ dom.btnSaveApi.addEventListener('click', async () => {
   dom.apiModal.classList.add('hidden');
 });
 
+async function postViewport(payload) {
+  try {
+    await fetch('/api/viewport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error('Viewport load failed:', err);
+  }
+}
+
 async function postConfig(payload) {
   try {
     const res = await fetch('/api/config', {
@@ -411,7 +431,11 @@ function updateStatusUI(status) {
         : 'LIVE OPENWATERS';
 
   dom.statusDot.classList.remove('sim', 'error');
-  if (status.connectionState === 'connected') {
+  const cooldownMs = status.rateLimit?.cooldownRemainingMs || 0;
+  if (cooldownMs > 0) {
+    dom.statusDot.classList.add('sim');
+    dom.statusMode.textContent = `호출 제한 대기 ${Math.ceil(cooldownMs / 1000)}s`;
+  } else if (status.connectionState === 'connected') {
     dom.statusMode.textContent = providerLabel;
   } else if (status.connectionState === 'error') {
     dom.statusDot.classList.add('error');

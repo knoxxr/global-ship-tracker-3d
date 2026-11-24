@@ -115,3 +115,45 @@ export function buildBboxAround(lat, lon, maxAreaDeg2 = 90) {
   const maxLon = Math.min(180, Number((lon + halfSpan).toFixed(2)));
   return [minLat, minLon, maxLat, maxLon];
 }
+
+/**
+ * Computes center-first sorted MVT tile coordinates covering a viewport span,
+ * safely wrapping across the ±180° antimeridian and capping tile count.
+ */
+export function getViewportMvtTiles(centerLat, centerLon, halfLat, halfLon, z, maxTiles = 16) {
+  const n = 1 << z;
+  const DEG2RAD = Math.PI / 180;
+  const clampLat = (lat) => Math.max(-85, Math.min(85, lat));
+  const latToY = (lat) => {
+    const c = clampLat(lat) * DEG2RAD;
+    return Math.max(
+      0,
+      Math.min(n - 1, Math.floor(((1 - Math.log(Math.tan(c) + 1 / Math.cos(c)) / Math.PI) / 2) * n))
+    );
+  };
+  const lonToX = (lon) => Math.floor(((lon + 180) / 360) * n);
+
+  const minY = latToY(centerLat + halfLat * 1.1);
+  const maxY = latToY(centerLat - halfLat * 1.1);
+  const rawMinX = lonToX(centerLon - halfLon * 1.1);
+  const rawMaxX = lonToX(centerLon + halfLon * 1.1);
+  const cxTile = ((centerLon + 180) / 360) * n;
+  const cLatRad = clampLat(centerLat) * DEG2RAD;
+  const cyTile = ((1 - Math.log(Math.tan(cLatRad) + 1 / Math.cos(cLatRad)) / Math.PI) / 2) * n;
+
+  const tiles = [];
+  const seen = new Set();
+  for (let y = minY; y <= maxY; y++) {
+    for (let rawX = rawMinX; rawX <= rawMaxX; rawX++) {
+      const x = ((rawX % n) + n) % n;
+      const key = `${z}/${x}/${y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const dist = Math.hypot(rawX + 0.5 - cxTile, y + 0.5 - cyTile);
+      tiles.push({ z, x, y, key, dist });
+    }
+  }
+  tiles.sort((a, b) => a.dist - b.dist);
+  return tiles.slice(0, maxTiles);
+}
+

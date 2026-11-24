@@ -28,7 +28,13 @@ import {
   escapeCsvCell,
 } from '../src/public/telemetry-ui.js';
 import { decodeMvtPoints } from '../src/mvt-decoder.js';
-import { LIVE_ZONES, buildBboxAround } from '../src/live-zones.js';
+import { LIVE_ZONES, buildBboxAround, getViewportMvtTiles } from '../src/live-zones.js';
+import {
+  ApiRateGuard,
+  RateLimitCooldownError,
+  parseRetryAfterMs,
+  checkThrottledResponse,
+} from '../src/public/api-guard.js';
 import { ShipTrackerServer } from '../src/server.js';
 
 describe('Spherical Geo Math', () => {
@@ -388,3 +394,110 @@ describe('AIS Text Cleaning, Telemetry UI Helpers & CSV Security', () => {
     assert.equal(escapeCsvCell('-74.01'), '"-74.01"');
   });
 });
+
+describe('Multi-User Rate-Limit Guard, Coalescing & Shared Viewport API', () => {
+  it('coalesces concurrent identical requests and serves TTL cache hits with 1 upstream call', async () => {
+    const guard = new ApiRateGuard({ maxBurst: 10, refillPerSec: 10 });
+    let upstreamCalls = 0;
+
+    // 25 concurrent users asking for the same tile/vessel simultaneously
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () =>
+        guard.run('tile:5/27/12', { ttlMs: 60000 }, async () => {
+          upstreamCalls++;
+          await new Promise((r) => setTimeout(r, 20));
+          return { ships: 1615 };
+        })
+      )
+    );
+
+    assert.equal(upstreamCalls, 1);
+    assert.equal(results.length, 25);
+    assert.ok(results.every((r) => r.ships === 1615));
+
+    // Subsequent call within TTL hits memory cache with 0 upstream calls
+    const cached = await guard.run('tile:5/27/12', { ttlMs: 60000 }, async () => {
+      upstreamCalls++;
+      return { ships: 0 };
+    });
+    assert.equal(cached.ships, 1615);
+    assert.equal(upstreamCalls, 1);
+
+    const stats = guard.getStats();
+    assert.equal(stats.upstreamRequests, 1);
+    assert.equal(stats.coalescedHits, 24);
+    assert.equal(stats.cacheHits, 1);
+  });
+
+  it('activates global cooldown on HTTP 429 with Retry-After and prevents request storms', async () => {
+    let cooldownTriggered = false;
+    const guard = new ApiRateGuard({
+      maxBurst: 10,
+      refillPerSec: 10,
+      baseBackoffMs: 1000,
+      maxBackoffMs: 15000,
+      onCooldown: () => {
+        cooldownTriggered = true;
+      },
+    });
+
+    assert.equal(parseRetryAfterMs('7'), 7000);
+    assert.ok(parseRetryAfterMs(new Date(Date.now() + 5000).toUTCString()) > 0);
+
+    await assert.rejects(
+      () =>
+        guard.run('bbox:test', { ttlMs: 1000 }, async () => {
+          const fake429 = { status: 429, headers: new Headers({ 'retry-after': '4' }) };
+          checkThrottledResponse(guard, fake429);
+        }),
+      RateLimitCooldownError
+    );
+
+    assert.equal(cooldownTriggered, true);
+    assert.equal(guard.isCoolingDown(), true);
+    assert.ok(guard.getCooldownRemainingMs() >= 3000);
+
+    // Follow-up calls during cooldown are skipped immediately instead of hammering upstream
+    let executedDuringCooldown = false;
+    await assert.rejects(
+      () =>
+        guard.run('tile:5/1/1', { ttlMs: 1000 }, async () => {
+          executedDuringCooldown = true;
+          return 1;
+        }),
+      RateLimitCooldownError
+    );
+    assert.equal(executedDuringCooldown, false);
+    assert.equal(guard.getStats().skippedDuringCooldown, 1);
+  });
+
+  it('computes antimeridian-safe center-first viewport MVT tiles and exposes server /api/viewport & rateLimit status', async () => {
+    const tiles = getViewportMvtTiles(35.1, 179.5, 6, 8, 5, 12);
+    assert.ok(tiles.length > 0 && tiles.length <= 12);
+    assert.ok(tiles.some((t) => t.x === 31) && tiles.some((t) => t.x === 0));
+
+    const srv = new ShipTrackerServer({ port: 0, host: '127.0.0.1', autoConnect: false });
+    try {
+      await srv.start();
+      const base = `http://127.0.0.1:${srv.port}`;
+
+      const vpRes = await fetch(`${base}/api/viewport`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat: 35.1, lon: 129.0, zoom: 5.0, halfLat: 5, halfLon: 7 }),
+      });
+      assert.equal(vpRes.status, 200);
+      const vpJson = await vpRes.json();
+      assert.equal(vpJson.ok, true);
+      assert.ok(vpJson.rateLimit && typeof vpJson.rateLimit.upstreamRequests === 'number');
+
+      const stRes = await fetch(`${base}/api/status`);
+      const stJson = await stRes.json();
+      assert.equal(typeof stJson.connectedClients, 'number');
+      assert.ok(stJson.rateLimit && typeof stJson.rateLimit.cacheSize === 'number');
+    } finally {
+      await srv.stop();
+    }
+  });
+});
+

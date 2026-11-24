@@ -15,6 +15,7 @@ const FILES_TO_COPY = [
   ['src/live-zones.js', 'live-zones.js'],
   ['src/mvt-decoder.js', 'mvt-decoder.js'],
   ['src/ais-parser.js', 'ais-parser.js'],
+  ['src/public/api-guard.js', 'api-guard.js'],
   ['src/public/world-geo-lite.js', 'world-geo-lite.js'],
   ['src/public/world-geo.js', 'world-geo.js'],
   ['src/public/world-data.js', 'world-data.js'],
@@ -54,7 +55,7 @@ if (stampedIndex !== docsIndex) {
 
 // Stamp ?v=<hash> into docs/pages-app.js local module imports
 const stampedPagesApp = pagesAppRaw.replace(
-  /from '\.\/(globe-engine|ais-parser|telemetry-ui|ui-controller)\.js(?:\?v=[a-zA-Z0-9_-]+)?'/g,
+  /from '\.\/(globe-engine|ais-parser|telemetry-ui|ui-controller|api-guard)\.js(?:\?v=[a-zA-Z0-9_-]+)?'/g,
   `from './$1.js?v=${ver}'`
 );
 if (stampedPagesApp !== pagesAppRaw) {
