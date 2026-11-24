@@ -82,7 +82,10 @@ const dom = {
 
 const showToast = createToast(dom.toastNotice);
 let autoTrackTimer = null;
+let autoViewportTimer = null;
 let lastAutoTrackKey = '';
+let lastAutoViewportCenter = { lat: 35.1, lon: 129.0 };
+let lastAutoViewportAt = 0;
 
 const globe = new GlobeEngine(dom.canvas, {
   initialLat: deepLink.lat ?? 28,
@@ -112,6 +115,26 @@ const globe = new GlobeEngine(dom.canvas, {
   },
   onCameraChange: ({ lat, lon, zoom }) => {
     dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom >= 100 ? Math.round(zoom) : zoom.toFixed(1)}x`;
+    if (zoom >= 3.0) {
+      const distDeg = Math.hypot(lat - lastAutoViewportCenter.lat, lon - lastAutoViewportCenter.lon);
+      if (distDeg >= 2.5) {
+        clearTimeout(autoViewportTimer);
+        autoViewportTimer = setTimeout(() => {
+          const now = Date.now();
+          if (now - lastAutoViewportAt < 6000) return;
+          lastAutoViewportAt = now;
+          lastAutoViewportCenter = { lat: globe.centerLat, lon: globe.centerLon };
+          const half = 4.5;
+          const bbox = [
+            Math.max(-85, Number((globe.centerLat - half).toFixed(2))),
+            Math.max(-180, Number((globe.centerLon - half).toFixed(2))),
+            Math.min(85, Number((globe.centerLat + half).toFixed(2))),
+            Math.min(180, Number((globe.centerLon + half).toFixed(2))),
+          ];
+          postConfig({ bbox, bboxOnly: true }).catch(() => {});
+        }, 1800);
+      }
+    }
     if (zoom >= 2.8 && globe.options.showWakes) {
       const g = 2 / Math.max(1, zoom / 3);
       const key = `${Math.round(lat / g)}:${Math.round(lon / g)}:${Math.round(Math.log2(zoom) * 2)}`;

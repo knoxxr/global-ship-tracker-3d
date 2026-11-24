@@ -32,7 +32,7 @@ const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const USER_AGENT = 'MarineGlobe3D/2.0 (https://github.com/knoxxr/global-ship-tracker-3d)';
-const MAX_LIVE_VESSELS = 60000;
+const MAX_LIVE_VESSELS = 80000;
 const STALE_VESSEL_MS = 7 * 24 * 60 * 60 * 1000; // Keep stationary port vessels up to 7 days like Open Waters
 
 const MIME_TYPES = {

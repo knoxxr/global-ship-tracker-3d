@@ -7,7 +7,7 @@
  * Delegates shared UI state/controls to ./ui-controller.js.
  */
 
-import { GlobeEngine } from './globe-engine.js?v=53fe787f';
+import { GlobeEngine } from './globe-engine.js?v=cbf5d623';
 import { LIVE_ZONES, buildBboxAround } from './live-zones.js';
 import { decodeMvtPoints } from './mvt-decoder.js';
 import {
@@ -16,7 +16,7 @@ import {
   parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
-} from './ais-parser.js?v=53fe787f';
+} from './ais-parser.js?v=cbf5d623';
 import {
   formatCoordShort,
   sortVessels,
@@ -26,7 +26,7 @@ import {
   renderVirtualVesselList,
   renderInspectorBodyHtml,
   renderVirtualFleetTable,
-} from './telemetry-ui.js?v=53fe787f';
+} from './telemetry-ui.js?v=cbf5d623';
 import {
   isMobileViewport,
   loadPrefs,
@@ -40,10 +40,12 @@ import {
   updateTableSortIndicators,
   bindSharedUi,
   registerAppServiceWorker,
-} from './ui-controller.js?v=53fe787f';
+} from './ui-controller.js?v=cbf5d623';
 
-const MAX_VESSELS = 60000;
+const MAX_VESSELS = 80000;
 const TRACK_CACHE_MS = 10 * 60 * 1000;
+const TILE_CACHE_MS = 3 * 60 * 1000;
+const BBOX_CACHE_MS = 3 * 60 * 1000;
 const STALE_VESSEL_MS = 6 * 60 * 60 * 1000;
 
 const savedPrefs = loadPrefs();
@@ -85,7 +87,10 @@ const state = {
   msgPerSec: 0,
   vesselsMap: new Map(),
   trackFetchedAt: new Map(),
+  tileFetchedAt: new Map(),
+  bboxFetchedAt: new Map(),
   loadingTracks: false,
+  loadingViewport: false,
   allVessels: [],
   filteredVessels: [],
   tableVessels: [],
@@ -114,6 +119,7 @@ const dom = {
 const showToast = createToast(dom.toastNotice);
 let autoTrackTimer = null;
 let autoWsTimer = null;
+let autoViewportTimer = null;
 let lastAutoTrackKey = '';
 
 const globe = new GlobeEngine(dom.canvas, {
@@ -144,6 +150,13 @@ const globe = new GlobeEngine(dom.canvas, {
   },
   onCameraChange: ({ lat, lon, zoom }) => {
     dom.coordReadout.textContent = `LAT ${formatCoordShort(lat, true)} · LON ${formatCoordShort(lon, false)} · ${zoom >= 100 ? Math.round(zoom) : zoom.toFixed(1)}x`;
+    // Auto-load un-thinned z=5/6 MVT tiles & REST metadata for any region the user explores
+    if (state.provider === 'openwaters' && zoom >= 2.0) {
+      clearTimeout(autoViewportTimer);
+      autoViewportTimer = setTimeout(() => {
+        loadViewportVessels().catch(() => {});
+      }, 650);
+    }
     if (zoom >= 2.8 && globe.options.showWakes) {
       const g = 2 / Math.max(1, zoom / 3);
       const key = `${Math.round(lat / g)}:${Math.round(lon / g)}:${Math.round(Math.log2(zoom) * 2)}`;
@@ -279,6 +292,90 @@ async function fetchOpenWatersTile(z, x, y) {
   return loaded;
 }
 
+function getViewportMvtTiles(centerLat, centerLon, span, z, maxTiles = 16) {
+  const n = 1 << z;
+  const DEG2RAD = Math.PI / 180;
+  const latToY = (lat) => {
+    const c = Math.max(-85, Math.min(85, lat)) * DEG2RAD;
+    return Math.max(0, Math.min(n - 1, Math.floor(((1 - Math.log(Math.tan(c) + 1 / Math.cos(c)) / Math.PI) / 2) * n)));
+  };
+  const lonToX = (lon) => Math.floor(((lon + 180) / 360) * n);
+
+  const minY = latToY(centerLat + span.halfLat * 1.1);
+  const maxY = latToY(centerLat - span.halfLat * 1.1);
+  const rawMinX = lonToX(centerLon - span.halfLon * 1.1);
+  const rawMaxX = lonToX(centerLon + span.halfLon * 1.1);
+  const cxTile = ((centerLon + 180) / 360) * n;
+  const cyTile = ((1 - Math.log(Math.tan(Math.max(-85, Math.min(85, centerLat)) * DEG2RAD) + 1 / Math.cos(Math.max(-85, Math.min(85, centerLat)) * DEG2RAD)) / Math.PI) / 2) * n;
+
+  const tiles = [];
+  const seen = new Set();
+  for (let y = minY; y <= maxY; y++) {
+    for (let rawX = rawMinX; rawX <= rawMaxX; rawX++) {
+      const x = ((rawX % n) + n) % n;
+      const key = `${z}/${x}/${y}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const dist = Math.hypot(rawX + 0.5 - cxTile, y + 0.5 - cyTile);
+      tiles.push({ z, x, y, key, dist });
+    }
+  }
+  tiles.sort((a, b) => a.dist - b.dist);
+  return tiles.slice(0, maxTiles);
+}
+
+let viewportNeedsRetry = false;
+
+/**
+ * Automatically loads un-thinned Open Waters vessels (z=5/6 MVT tiles + high-zoom REST metadata)
+ * for whichever sea or coastline the user zooms into, eliminating z=3 global tile thinning gaps.
+ */
+async function loadViewportVessels() {
+  if (state.provider !== 'openwaters' || globe.zoom < 2.0) return;
+  if (state.loadingViewport) {
+    viewportNeedsRetry = true;
+    return;
+  }
+
+  const now = Date.now();
+  const z = globe.zoom >= 6.0 ? 6 : 5;
+  const span = globe.getViewportSpanDeg();
+  const tiles = getViewportMvtTiles(globe.centerLat, globe.centerLon, span, z, 16);
+  const missingTiles = tiles.filter((t) => now - (state.tileFetchedAt.get(t.key) || 0) > TILE_CACHE_MS);
+
+  const bboxKey = `${Math.round(globe.centerLat / 2)}:${Math.round(globe.centerLon / 2)}`;
+  const needRestBbox =
+    globe.zoom >= 7.0 && now - (state.bboxFetchedAt.get(bboxKey) || 0) > BBOX_CACHE_MS;
+
+  if (missingTiles.length === 0 && !needRestBbox) return;
+
+  state.loadingViewport = true;
+  let loaded = 0;
+  try {
+    if (missingTiles.length > 0) {
+      await runPool(missingTiles, 4, async (t) => {
+        state.tileFetchedAt.set(t.key, Date.now());
+        loaded += await fetchOpenWatersTile(t.z, t.x, t.y);
+      });
+    }
+    if (needRestBbox) {
+      state.bboxFetchedAt.set(bboxKey, Date.now());
+      const maxArea = state.openWatersToken ? 360 : 90;
+      const bbox = buildBboxAround(globe.centerLat, globe.centerLon, maxArea);
+      loaded += await fetchOpenWatersBbox(bbox);
+    }
+    if (loaded > 0) syncFromMap();
+  } catch {
+    // non-fatal viewport fill error
+  } finally {
+    state.loadingViewport = false;
+    if (viewportNeedsRetry) {
+      viewportNeedsRetry = false;
+      setTimeout(() => loadViewportVessels().catch(() => {}), 150);
+    }
+  }
+}
+
 function connectOpenWatersWs(bbox) {
   if (state.ws) {
     const old = state.ws;
@@ -366,6 +463,11 @@ async function startOpenWaters() {
   });
   syncFromMap();
 
+  // If opened directly at a zoomed-in deep-link, fill its un-thinned tiles right away
+  if (globe.zoom >= 2.0) {
+    loadViewportVessels().catch(() => {});
+  }
+
   // Phase 2: Full-planet z=3 MVT vector tiles (64 tiles)
   const z3Tiles = [];
   for (let x = 0; x < 8; x++) {
@@ -391,6 +493,9 @@ async function startOpenWaters() {
     state.connectionState = 'connected';
     state.loadedSteps = state.totalSteps;
     syncFromMap();
+    if (globe.zoom >= 2.0) {
+      loadViewportVessels().catch(() => {});
+    }
   }
 }
 
