@@ -6,6 +6,12 @@
 
 import { VESSEL_TYPES } from './world-data.js';
 import { sortVesselsByColumn, exportVesselsCsv } from './telemetry-ui.js';
+import {
+  t,
+  applyStaticI18n,
+  getVesselTypeLabel,
+  getPortDisplayName,
+} from './i18n.js';
 
 export const PREFS_KEY = 'marineglobe_prefs_v1';
 
@@ -27,6 +33,7 @@ export function persistPrefs(state, globe, extra = {}) {
       PREFS_KEY,
       JSON.stringify({
         theme: state.theme,
+        lang: state.lang || 'en',
         movingOnly: state.movingOnly,
         sortBy: state.sortBy,
         favorites: Array.from(state.favorites),
@@ -120,6 +127,7 @@ export function queryCommonDom() {
     coordReadout: document.getElementById('coord-readout'),
     hoverTooltip: document.getElementById('hover-tooltip'),
     toastNotice: document.getElementById('toast-notice'),
+    btnLang: document.getElementById('btn-lang'),
     btnTheme: document.getElementById('btn-theme'),
     btnFleetTable: document.getElementById('btn-fleet-table'),
     fleetModal: document.getElementById('fleet-modal'),
@@ -256,7 +264,7 @@ export function renderPortFilterBanner(bannerEl, portFilter, filteredVessels) {
     if ((v.sog || 0) >= 0.5) moving++;
   }
   const moored = filteredVessels.length - moving;
-  const safeName = String(portFilter.name || '')
+  const safeName = String(getPortDisplayName(portFilter) || '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;');
@@ -264,9 +272,9 @@ export function renderPortFilterBanner(bannerEl, portFilter, filteredVessels) {
   bannerEl.innerHTML = `
     <div class="port-banner-info">
       <strong>⚓ ${safeName} (${portFilter.radiusNm || 15}NM)</strong>
-      <span class="mono">항해 ${moving} · 정박 ${moored}</span>
+      <span class="mono">${t('portBannerStats', { moving, moored })}</span>
     </div>
-    <button id="btn-clear-port-filter" class="btn btn-icon" type="button" title="항만 관제 필터 해제" aria-label="항만 필터 해제">✕</button>
+    <button id="btn-clear-port-filter" class="btn btn-icon" type="button" title="${t('portClearTitle')}" aria-label="${t('portClearTitle')}">✕</button>
   `;
 }
 
@@ -278,15 +286,15 @@ export function buildFilterChipsHtml(allVessels, activeType, favorites) {
     if (favorites.has(v.mmsi)) counts.favorites++;
   }
 
-  let html = `<button class="filter-chip ${activeType === 'all' ? 'active' : ''}" data-type="all">전체 <span class="mono">${counts.all.toLocaleString()}</span></button>`;
+  let html = `<button class="filter-chip ${activeType === 'all' ? 'active' : ''}" data-type="all">${t('allFilter')} <span class="mono">${counts.all.toLocaleString()}</span></button>`;
   if (favorites.size > 0 || activeType === 'favorites') {
-    html += `<button class="filter-chip ${activeType === 'favorites' ? 'active' : ''}" data-type="favorites"><span class="fav-star">★</span> 관심 <span class="mono">${counts.favorites.toLocaleString()}</span></button>`;
+    html += `<button class="filter-chip ${activeType === 'favorites' ? 'active' : ''}" data-type="favorites"><span class="fav-star">★</span> ${t('favFilter')} <span class="mono">${counts.favorites.toLocaleString()}</span></button>`;
   }
   for (const [key, meta] of Object.entries(VESSEL_TYPES)) {
     html += `
       <button class="filter-chip ${activeType === key ? 'active' : ''}" data-type="${key}">
         <span class="type-dot" style="background:${meta.color}"></span>
-        ${meta.short} <span class="mono">${counts[key].toLocaleString()}</span>
+        ${getVesselTypeLabel(meta, true)} <span class="mono">${counts[key].toLocaleString()}</span>
       </button>
     `;
   }
@@ -357,6 +365,7 @@ export function bindSharedUi({
   renderFleetTable,
   selectVessel,
   showToast,
+  onLangChange,
 }) {
   function setSidebarOpen(open) {
     dom.sidebar.classList.toggle('collapsed', !open);
@@ -420,10 +429,10 @@ export function bindSharedUi({
       if (!state.selectedMmsi) return;
       if (state.favorites.has(state.selectedMmsi)) {
         state.favorites.delete(state.selectedMmsi);
-        showToast('관심 선박에서 해제했습니다.');
+        showToast(t('toastFavRemoved'));
       } else {
         state.favorites.add(state.selectedMmsi);
-        showToast('★ 관심 선박에 등록했습니다.');
+        showToast(t('toastFavAdded'));
       }
       savePrefs();
       applyFiltersAndRender();
@@ -459,7 +468,7 @@ export function bindSharedUi({
         speedKn: Number(v.sog) || 0,
       });
       if (dom.btnMeasure) dom.btnMeasure.classList.add('active');
-      showToast(`📏 ${v.name} 출발점 고정 — 목적지를 클릭해 거리·ETA를 측정하세요`);
+      showToast(t('toastMeasureFromVessel', { name: v.name }));
       return;
     }
     if (e.target.closest('#btn-share-vessel')) {
@@ -473,25 +482,27 @@ export function bindSharedUi({
       } catch { /* ignore */ }
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(shareUrl)
-          .then(() => showToast('선박 공유 링크를 복사했습니다.'))
-          .catch(() => showToast('주소창 링크가 업데이트되었습니다.'));
+          .then(() => showToast(t('toastVesselLinkCopied')))
+          .catch(() => showToast(t('toastUrlUpdated')));
       } else {
-        showToast('주소창 링크가 업데이트되었습니다.');
+        showToast(t('toastUrlUpdated'));
       }
     }
   });
 
   // Port 15NM geofence filter helper & clear button
   function setPortFilter(port) {
-    state.portFilter = port ? { name: port.name, lat: port.lat, lon: port.lon, radiusNm: port.radiusNm || 15 } : null;
+    state.portFilter = port
+      ? { name: port.name, nameEn: port.nameEn, lat: port.lat, lon: port.lon, radiusNm: port.radiusNm || 15 }
+      : null;
     globe.setActivePortFilter(state.portFilter);
     dom.vesselList.scrollTop = 0;
     if (state.portFilter) {
       globe.flyTo(port.lat, port.lon, Math.max(globe.zoom, 6.2), 650);
       setSidebarOpen(true);
-      showToast(`⚓ ${port.name} 반경 ${state.portFilter.radiusNm}NM 항만 관제 필터 적용`);
+      showToast(t('toastPortApplied', { name: getPortDisplayName(port), radius: state.portFilter.radiusNm }));
     } else {
-      showToast('항만 관제 필터를 해제했습니다.');
+      showToast(t('toastPortCleared'));
     }
     applyFiltersAndRender();
   }
@@ -629,13 +640,13 @@ export function bindSharedUi({
         dom.btnMeasure.classList.add('active');
         showToast(
           anchor
-            ? `📏 ${anchor.label} 출발 — 목적지를 클릭하세요 (Esc 종료)`
-            : '📏 거리·방위 측정 모드 — 지구본에서 출발지·목적지를 순서대로 클릭하세요'
+            ? t('toastMeasureFromVessel', { name: anchor.label })
+            : t('toastMeasureStart')
         );
       } else {
         globe.clearMeasure();
         dom.btnMeasure.classList.remove('active');
-        showToast('거리 측정을 종료했습니다.');
+        showToast(t('toastMeasureEnd'));
       }
     });
   }
@@ -655,10 +666,10 @@ export function bindSharedUi({
       } catch { /* ignore */ }
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(shareUrl)
-          .then(() => showToast('🔗 현재 화면 공유 링크를 복사했습니다.'))
-          .catch(() => showToast('주소창 공유 링크가 업데이트되었습니다.'));
+          .then(() => showToast(t('toastViewLinkCopied')))
+          .catch(() => showToast(t('toastUrlUpdated')));
       } else {
-        showToast('주소창 공유 링크가 업데이트되었습니다.');
+        showToast(t('toastUrlUpdated'));
       }
     });
   }
@@ -674,9 +685,9 @@ export function bindSharedUi({
         document.body.appendChild(a);
         a.click();
         a.remove();
-        showToast('📸 현재 3D 지구본 PNG 스냅샷을 저장했습니다.');
+        showToast(t('toastSnapshotSaved'));
       } catch {
-        showToast('PNG 캡처 중 오류가 발생했습니다.');
+        showToast(t('toastSnapshotErr'));
       }
     });
   }
@@ -714,6 +725,20 @@ export function bindSharedUi({
       savePrefs();
       dom.vesselList.scrollTop = 0;
       applyFiltersAndRender();
+    });
+  }
+
+  // EN / KO Language Toggle (English default)
+  if (dom.btnLang) {
+    dom.btnLang.addEventListener('click', () => {
+      state.lang = state.lang === 'en' ? 'ko' : 'en';
+      applyStaticI18n(state.lang);
+      globe.setLang(state.lang);
+      savePrefs();
+      if (dom.inspector) dom.inspector._lastHtml = null;
+      if (typeof onLangChange === 'function') onLangChange(state.lang);
+      applyFiltersAndRender();
+      showToast(t('toastLangSwitched'));
     });
   }
 
@@ -763,7 +788,9 @@ export function bindSharedUi({
     }
   });
 
-  // Restore saved UI preferences on boot
+  // Restore saved UI preferences & language on boot
+  applyStaticI18n(state.lang || 'en');
+  globe.setLang(state.lang || 'en');
   if (state.theme === 'light') {
     document.body.classList.add('theme-light');
     dom.btnTheme.textContent = '☾';

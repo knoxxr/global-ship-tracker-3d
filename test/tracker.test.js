@@ -33,6 +33,14 @@ import {
   filterVesselsList,
   createFavoriteMonitor,
 } from '../src/public/ui-controller.js';
+import {
+  getLang,
+  setLang,
+  resolveInitialLang,
+  t,
+  getZoneLabel,
+  getPortDisplayName,
+} from '../src/public/i18n.js';
 import { decodeMvtPoints } from '../src/mvt-decoder.js';
 import { LIVE_ZONES, buildBboxAround, getViewportMvtTiles } from '../src/live-zones.js';
 import {
@@ -577,6 +585,26 @@ describe('Nautical Analysis Tools, Port Geofence & Favorite Status Alerts', () =
     assert.ok(html.includes('14.2 kn'));
     assert.ok(html.includes('btn-measure-from-vessel'));
   });
+
+  it('defaults to English (en) and cleanly switches UI/zone/port labels to Korean (ko)', () => {
+    assert.equal(resolveInitialLang(undefined), 'en');
+    assert.equal(resolveInitialLang('ko'), 'ko');
+    setLang('en');
+    assert.equal(getLang(), 'en');
+    assert.equal(t('btnScanView'), 'Scan View');
+    assert.equal(getZoneLabel('korea-strait'), 'Korea Strait');
+    assert.equal(getPortDisplayName({ name: '부산', nameEn: 'Busan' }), 'Busan');
+
+    setLang('ko');
+    assert.equal(getLang(), 'ko');
+    assert.equal(t('btnScanView'), '현재 화면 수신');
+    assert.equal(getZoneLabel('korea-strait'), '한반도·대한해협');
+    assert.equal(getPortDisplayName({ name: '부산', nameEn: 'Busan' }), '부산');
+
+    // Restore default English
+    setLang('en');
+  });
 });
+
 
 

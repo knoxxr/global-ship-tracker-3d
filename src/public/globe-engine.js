@@ -187,9 +187,10 @@ export class GlobeEngine {
     this._lastTouchTap = { time: 0, x: 0, y: 0 };
 
     // Great-circle ruler & port geofence filter states
+    this.lang = options.lang === 'ko' ? 'ko' : 'en';
     this.measureMode = false;
     this.measurePoints = []; // [{ lat, lon, label?, speedKn? }]
-    this.activePortFilter = null; // { name, lat, lon, radiusNm }
+    this.activePortFilter = null; // { name, nameEn?, lat, lon, radiusNm }
     this.screenPorts = [];
 
     // Layer toggles
@@ -1458,7 +1459,8 @@ export class GlobeEngine {
       if (this.zoom < s.minZoom || this.zoom > s.maxZoom) continue;
       const p = this.projectRad(s.lat * DEG2RAD, s.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
       if (p.z < 0.2 || p.sx < 0 || p.sx > this.width || p.sy < 0 || p.sy > this.height) continue;
-      ctx.fillText(s.name, p.sx, p.sy);
+      const label = this.lang === 'ko' ? s.name : (s.nameEn || s.name);
+      ctx.fillText(label, p.sx, p.sy);
     }
     ctx.restore();
   }
@@ -1499,6 +1501,7 @@ export class GlobeEngine {
       if (p.z < 0.14 || p.sx < -20 || p.sx > this.width + 20 || p.sy < -20 || p.sy > this.height + 20) continue;
 
       const isActivePort = this.activePortFilter && this.activePortFilter.name === port.name;
+      const portLabel = this.lang === 'ko' ? port.name : (port.nameEn || port.name);
       const pv = latLonToVec3(port.lat, port.lon);
       const sunDot = pv[0] * sunVec[0] + pv[1] * sunVec[1] + pv[2] * sunVec[2];
       const isNight = this.options.showDayNight && sunDot < -0.05;
@@ -1508,7 +1511,7 @@ export class GlobeEngine {
       ctx.arc(p.sx, p.sy, isActivePort ? 3.8 : 2.4, 0, Math.PI * 2);
       ctx.fill();
 
-      const tw = ctx.measureText(port.name).width + 6;
+      const tw = ctx.measureText(portLabel).width + 6;
       const lx = p.sx + 5;
       const ly = p.sy - 7;
       this.screenPorts.push({ port, sx: p.sx, sy: p.sy, lx, ly, w: tw, h: 14 });
@@ -1519,7 +1522,7 @@ export class GlobeEngine {
       ctx.fillStyle = isActivePort ? 'rgba(14, 165, 233, 0.28)' : P.portLabelBg;
       ctx.fillRect(lx - 2, ly, tw, 14);
       ctx.fillStyle = isActivePort ? '#38bdf8' : P.portLabel;
-      ctx.fillText(port.name, lx + 1, p.sy);
+      ctx.fillText(portLabel, lx + 1, p.sy);
     }
   }
 
@@ -1989,7 +1992,8 @@ export class GlobeEngine {
     const topPt = _destinationPoint(pf.lat, pf.lon, 0, radiusNm);
     const spTop = this.projectRad(topPt.lat * DEG2RAD, topPt.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
     if (spTop.z > 0.05) {
-      const label = `${pf.name} · ${radiusNm}NM 관제권`;
+      const pName = this.lang === 'ko' ? pf.name : (pf.nameEn || pf.name);
+      const label = this.lang === 'ko' ? `${pName} · ${radiusNm}NM 관제권` : `${pName} · ${radiusNm}NM Zone`;
       ctx.font = '600 10.5px system-ui, -apple-system, sans-serif';
       const tw = ctx.measureText(label).width + 10;
       ctx.fillStyle = P.calloutBg;
@@ -2139,6 +2143,11 @@ export class GlobeEngine {
 
   setActivePortFilter(port) {
     this.activePortFilter = port ? { ...port, radiusNm: port.radiusNm || 15 } : null;
+    this._dirty = true;
+  }
+
+  setLang(lang) {
+    this.lang = lang === 'ko' ? 'ko' : 'en';
     this._dirty = true;
   }
 

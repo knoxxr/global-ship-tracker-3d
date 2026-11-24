@@ -7,7 +7,7 @@
  * Delegates shared UI state/controls to ./ui-controller.js.
  */
 
-import { GlobeEngine } from './globe-engine.js?v=06d7d74e';
+import { GlobeEngine } from './globe-engine.js?v=a226af13';
 import { LIVE_ZONES, buildBboxAround, getViewportMvtTiles } from './live-zones.js';
 import { decodeMvtPoints } from './mvt-decoder.js';
 import {
@@ -15,14 +15,14 @@ import {
   checkThrottledResponse,
   readBrowserCache,
   writeBrowserCache,
-} from './api-guard.js?v=06d7d74e';
+} from './api-guard.js?v=a226af13';
 import {
   parseOpenWatersEvent,
   parseOpenWatersFeature,
   parseOpenWatersTilePoint,
   parseOpenWatersTrack,
   parseDigitrafficData,
-} from './ais-parser.js?v=06d7d74e';
+} from './ais-parser.js?v=a226af13';
 import {
   formatCoordShort,
   sortVessels,
@@ -32,7 +32,7 @@ import {
   renderVirtualVesselList,
   renderInspectorBodyHtml,
   renderVirtualFleetTable,
-} from './telemetry-ui.js?v=06d7d74e';
+} from './telemetry-ui.js?v=a226af13';
 import {
   isMobileViewport,
   loadPrefs,
@@ -49,7 +49,13 @@ import {
   updateTableSortIndicators,
   bindSharedUi,
   registerAppServiceWorker,
-} from './ui-controller.js?v=06d7d74e';
+} from './ui-controller.js?v=a226af13';
+import {
+  resolveInitialLang,
+  setLang,
+  t,
+  getZoneLabel,
+} from './i18n.js?v=a226af13';
 
 const MAX_VESSELS = 80000;
 const TRACK_CACHE_MS = 10 * 60 * 1000;
@@ -60,6 +66,8 @@ const STALE_VESSEL_MS = 6 * 60 * 60 * 1000;
 const AIS_HTTP_CACHE = 'marineglobe-ais-v1';
 
 const savedPrefs = loadPrefs();
+const initialLang = resolveInitialLang(savedPrefs.lang);
+setLang(initialLang);
 const deepLink = parseHashDeepLink();
 const urlParams = new URLSearchParams(window.location.search);
 const queryBackendUrl = (urlParams.get('backend') || '').trim().replace(/\/+$/, '');
@@ -127,6 +135,7 @@ const state = {
   tableSearchQuery: '',
   favorites: new Set(Array.isArray(savedPrefs.favorites) ? savedPrefs.favorites.map(String) : []),
   theme: savedPrefs.theme === 'light' ? 'light' : 'dark',
+  lang: initialLang,
   fleetModalOpen: false,
   dirtyUi: false,
 };
@@ -140,8 +149,8 @@ const showToast = createToast(dom.toastNotice);
 const checkFavoriteAlerts = createFavoriteMonitor((ev) => {
   showToast(
     ev.type === 'departed'
-      ? `★ ${ev.name} 출항 감지 (${ev.sog.toFixed(1)} kn)`
-      : `★ ${ev.name} 정박/감속 감지 (${ev.sog.toFixed(1)} kn)`
+      ? t('toastFavDeparted', { name: ev.name, sog: ev.sog.toFixed(1) })
+      : t('toastFavMoored', { name: ev.name, sog: ev.sog.toFixed(1) })
   );
 });
 
@@ -152,8 +161,8 @@ const apiGuard = new ApiRateGuard({
   maxCacheEntries: 2500,
   onCooldown: (_until, status, waitMs) => {
     const secs = Math.ceil(waitMs / 1000);
-    state.lastError = `API 호출 제한 (HTTP ${status}) — ${secs}초 후 자동 재개`;
-    showToast(`동시 접속 호출 제한 감지 — ${secs}초 후 자동 재개됩니다`);
+    state.lastError = `HTTP ${status} (${secs}s)`;
+    showToast(t('toastRateLimit', { secs }));
     updateStatusBadge();
   },
 });
@@ -181,6 +190,7 @@ const globe = new GlobeEngine(dom.canvas, {
   initialLon: deepLink.lon ?? 124,
   initialZoom: deepLink.zoom ?? (window.innerWidth <= 768 ? 1.02 : 1.4),
   theme: state.theme,
+  lang: state.lang,
   onSelectVessel: (vessel) => selectVessel(vessel.mmsi, true),
   onHoverVessel: (vessel, mx, my) => {
     if (!vessel) {
@@ -268,18 +278,18 @@ function updateStatusBadge() {
   const cooldownMs = apiGuard.getCooldownRemainingMs();
   if (cooldownMs > 0) {
     dom.statusDot.classList.add('sim');
-    dom.statusMode.textContent = `호출 제한 대기 ${Math.ceil(cooldownMs / 1000)}s`;
+    dom.statusMode.textContent = t('statusRateWait', { secs: Math.ceil(cooldownMs / 1000) });
   } else if (state.connectionState === 'connected') {
     dom.statusMode.textContent =
       state.provider === 'openwaters' && state.tabRole === 'leader' && state.loadedSteps < state.totalSteps
-        ? `전역 수신 ${Math.round((state.loadedSteps / state.totalSteps) * 100)}%`
+        ? t('statusGlobalSync', { pct: Math.round((state.loadedSteps / state.totalSteps) * 100) })
         : label;
   } else if (state.connectionState === 'error') {
     dom.statusDot.classList.add('error');
-    dom.statusMode.textContent = '피드 오류';
+    dom.statusMode.textContent = t('statusFeedError');
   } else {
     dom.statusDot.classList.add('sim');
-    dom.statusMode.textContent = '전역 연결 중...';
+    dom.statusMode.textContent = t('statusConnectingGlobal');
   }
 }
 
@@ -815,6 +825,14 @@ function startRemoteBackend(baseUrl) {
 }
 
 // --- Presets & Rendering ---
+function updatePresetLabels() {
+  dom.presetBar.querySelectorAll('[data-zone]').forEach((btn) => {
+    const id = btn.dataset.zone;
+    const zone = LIVE_ZONES.find((z) => z.id === id);
+    btn.textContent = getZoneLabel(id, zone?.label || id);
+  });
+}
+
 function renderPresets() {
   const topZoneIds = [
     'korea-strait',
@@ -831,7 +849,7 @@ function renderPresets() {
     .filter(Boolean);
 
   dom.presetBar.innerHTML = presets
-    .map((z) => `<button class="btn" data-zone="${z.id}">${z.label}</button>`)
+    .map((z) => `<button class="btn" data-zone="${z.id}">${getZoneLabel(z.id, z.label)}</button>`)
     .join('');
 
   dom.presetBar.addEventListener('click', async (e) => {
@@ -878,15 +896,15 @@ function renderPresets() {
 
 function getEmptyMessage() {
   if (state.lastError && state.allVessels.length === 0) {
-    return `실시간 수신 오류: ${state.lastError}`;
+    return t('emptyError', { err: state.lastError });
   }
   if (state.allVessels.length === 0) {
-    return '전 세계 16개 주요 해역에서 실제 AIS 선박 데이터를 수신하고 있습니다...';
+    return t('emptyLoadingGlobal');
   }
   if (state.activeType === 'favorites') {
-    return '현재 수신 중인 관심 선박이 없습니다. 선박 상세 패널에서 ☆를 눌러 등록하세요.';
+    return t('emptyFavorites');
   }
-  return '검색 조건과 일치하는 실시간 선박이 없습니다.';
+  return t('emptySearch');
 }
 
 function renderVisibleList() {
@@ -904,7 +922,7 @@ function renderFleetTable(recompute = true) {
     state.tableVessels = filterAndSortTableVessels(state.filteredVessels, state);
     updateTableSortIndicators(dom.fleetTableHead, state.tableSortCol, state.tableSortDir);
   }
-  dom.fleetModalSub.textContent = `실시간 수신 선박 총 ${state.tableVessels.length.toLocaleString()}척 표시 중 · 헤더 클릭 정렬 · 행 클릭 시 3D 지구본 즉시 추적`;
+  dom.fleetModalSub.textContent = t('fleetModalSub', { count: state.tableVessels.length.toLocaleString() });
   renderVirtualFleetTable(
     dom.fleetTableWrap,
     dom.fleetTableBody,
@@ -960,9 +978,9 @@ function applyFiltersAndRender() {
 
   updateStatusBadge();
   const countStr = state.filteredVessels.length.toLocaleString();
-  dom.btnFleetTable.innerHTML = `<span class="label-desktop">전체 선박 표 (${countStr})</span><span class="label-mobile">선박표</span>`;
+  dom.btnFleetTable.innerHTML = `<span class="label-desktop">${t('fleetTableDesktop', { count: countStr })}</span><span class="label-mobile">${t('fleetTableMobile')}</span>`;
   dom.fleetSummary.innerHTML = renderFleetSummaryHtml(state.filteredVessels);
-  dom.filteredCount.textContent = `실시간 수신: ${countStr}척`;
+  dom.filteredCount.textContent = t('filteredCount', { count: countStr });
 
   renderPortFilterBanner(dom.portFilterBanner, state.portFilter, state.filteredVessels);
   dom.filterGrid.innerHTML = buildFilterChipsHtml(state.allVessels, state.activeType, state.favorites);
@@ -982,7 +1000,7 @@ async function loadVisibleTracks(maxCount = 18) {
   if (targets.length === 0) return;
 
   state.loadingTracks = true;
-  if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = `항적 수신 중 (0/${targets.length})`;
+  if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = t('btnLoadingTracks', { done: 0, total: targets.length });
   let done = 0;
   const q = state.openWatersToken
     ? `?limit=60&key=${encodeURIComponent(state.openWatersToken)}`
@@ -1019,11 +1037,11 @@ async function loadVisibleTracks(maxCount = 18) {
         });
       }
       done++;
-      if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = `항적 수신 중 (${done}/${targets.length})`;
+      if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = t('btnLoadingTracks', { done, total: targets.length });
     });
   } finally {
     state.loadingTracks = false;
-    if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = '화면 항적 로드';
+    if (dom.btnLoadTracks) dom.btnLoadTracks.textContent = t('btnLoadTracks');
   }
 }
 
@@ -1039,6 +1057,10 @@ const ui = bindSharedUi({
   renderFleetTable,
   selectVessel,
   showToast,
+  onLangChange: () => {
+    updatePresetLabels();
+    updateStatusBadge();
+  },
 });
 
 async function selectVessel(mmsi, fly = false) {
@@ -1125,7 +1147,7 @@ dom.btnScanView.addEventListener('click', async () => {
   state.wsSubCenter = { lat: globe.centerLat, lon: globe.centerLon };
   state.lastAutoWsAt = Date.now();
   if (state.provider === 'openwaters') {
-    dom.btnScanView.textContent = '수신 중...';
+    dom.btnScanView.textContent = t('btnScanning');
     try {
       await fetchOpenWatersBbox(bbox);
       syncFromMap();
@@ -1135,10 +1157,10 @@ dom.btnScanView.addEventListener('click', async () => {
       state.lastError = err.message;
       updateStatusBadge();
     } finally {
-      dom.btnScanView.textContent = '현재 화면 수신';
+      dom.btnScanView.textContent = t('btnScanView');
     }
   } else if (state.provider === 'remote-sse' && state.backendUrl) {
-    dom.btnScanView.textContent = '수신 중...';
+    dom.btnScanView.textContent = t('btnScanning');
     try {
       const span = globe.getViewportSpanDeg();
       await fetch(`${state.backendUrl}/api/viewport`, {
@@ -1154,7 +1176,7 @@ dom.btnScanView.addEventListener('click', async () => {
         }),
       });
     } finally {
-      dom.btnScanView.textContent = '현재 화면 수신';
+      dom.btnScanView.textContent = t('btnScanView');
     }
   } else if (state.provider === 'digitraffic') {
     await pollDigitraffic().catch(() => {});
@@ -1196,7 +1218,7 @@ dom.btnSaveApi.addEventListener('click', () => {
 
   if (nextProvider === 'remote-sse') {
     if (!url || !/^https?:\/\//.test(url)) {
-      dom.modalError.textContent = '올바른 http:// 또는 https:// 백엔드 URL을 입력하세요.';
+      dom.modalError.textContent = t('errInvalidBackendUrl');
       dom.modalError.style.display = 'block';
       return;
     }

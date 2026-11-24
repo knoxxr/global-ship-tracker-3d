@@ -4,6 +4,7 @@
  */
 
 import { VESSEL_TYPES } from './world-data.js';
+import { t, getLang, getVesselTypeLabel } from './i18n.js';
 
 const COMPASS_16 = [
   'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
@@ -58,10 +59,10 @@ export function formatNum(n, suffix = '') {
 export function formatAge(updatedAt) {
   if (!updatedAt) return '-';
   const sec = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000));
-  if (sec < 60) return `${sec}초 전`;
+  if (sec < 60) return t('ageSecAgo', { n: sec });
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}분 전`;
-  return `${Math.floor(min / 60)}시간 전`;
+  if (min < 60) return t('ageMinAgo', { n: min });
+  return t('ageHrAgo', { n: Math.floor(min / 60) });
 }
 
 export function sortVessels(vessels, sortBy = 'recent-desc') {
@@ -114,20 +115,27 @@ export function sortVesselsByColumn(vessels, col = 'updatedAt', dir = 'desc') {
 export function renderHoverTooltipHtml(v) {
   const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
   const kmh = ((Number(v.sog) || 0) * 1.852).toFixed(1);
+  const typeLabel = v.aisTypeDesc || getVesselTypeLabel(meta, false);
+  const trackText =
+    v.trail && v.trail.length > 1
+      ? getLang() === 'ko'
+        ? ` · 항적 ${v.trail.length}점`
+        : ` · ${v.trail.length} track pts`
+      : '';
   return `
     <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;">
       <span class="type-dot" style="background:${meta.color}"></span>
       <span>${escapeHtml(v.name)}</span>
     </div>
     <div style="color:var(--text-muted);margin-top:2px;font-size:11px;">
-      ${escapeHtml(v.aisTypeDesc || meta.label)} · ${escapeHtml(v.flagName || v.flagCode)}
+      ${escapeHtml(typeLabel)} · ${escapeHtml(v.flagName || v.flagCode)}
     </div>
     <div class="mono" style="margin-top:4px;font-size:11px;line-height:1.5;">
       <div>MMSI ${escapeHtml(v.mmsi)}${v.imo ? ` · IMO ${escapeHtml(v.imo)}` : ''}</div>
       <div>${formatDms(v.lat, true)} / ${formatDms(v.lon, false)}</div>
       <div>${v.sog} kn (${kmh} km/h) · ${v.cog}° ${compass16(v.cog)}</div>
-      <div>목적지: ${escapeHtml(v.destination || '미보고')} · 수신: ${formatAge(v.updatedAt)}</div>
-      <div>출처: ${escapeHtml(shortSource(v.source))}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}${v.trail && v.trail.length > 1 ? ` · 항적 ${v.trail.length}점` : ''}</div>
+      <div>${t('tooltipDest')}: ${escapeHtml(v.destination || t('lblUnreported'))} · ${formatAge(v.updatedAt)}</div>
+      <div>${t('colSource')}: ${escapeHtml(shortSource(v.source))}${v.length ? ` · ${v.length}×${v.beam || '?'}m` : ''}${trackText}</div>
     </div>
   `;
 }
@@ -136,21 +144,22 @@ export function renderClusterTooltipHtml(cluster) {
   const breakdown = Object.entries(cluster.types || {})
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
-    .map(([t, c]) => {
-      const m = VESSEL_TYPES[t] || VESSEL_TYPES.bulk;
-      return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px;"><span class="type-dot" style="background:${m.color}"></span>${m.short} ${c.toLocaleString()}</span>`;
+    .map(([typeKey, c]) => {
+      const m = VESSEL_TYPES[typeKey] || VESSEL_TYPES.bulk;
+      return `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px;"><span class="type-dot" style="background:${m.color}"></span>${getVesselTypeLabel(m, true)} ${c.toLocaleString()}</span>`;
     })
     .join('');
 
+  const heading = getLang() === 'ko' ? '선박 밀집 구역' : 'Dense Vessel Cluster';
   return `
     <div style="font-weight:700;font-size:12px;">
-      선박 밀집 구역 · <span class="mono" style="color:var(--accent);">${cluster.count.toLocaleString()}척</span>
+      ${heading} · <span class="mono" style="color:var(--accent);">${t('tooltipShips', { count: cluster.count.toLocaleString() })}</span>
     </div>
     <div class="mono" style="color:var(--text-muted);font-size:11px;margin-top:2px;">
-      항해 중 ${cluster.movingCount.toLocaleString()}척 · 정박/계류 ${(cluster.count - cluster.movingCount).toLocaleString()}척
+      ${t('tooltipUnderway')} ${cluster.movingCount.toLocaleString()} · ${t('tooltipStatic')} ${(cluster.count - cluster.movingCount).toLocaleString()}
     </div>
     <div style="margin-top:5px;font-size:11px;line-height:1.5;">${breakdown}</div>
-    <div style="margin-top:4px;font-size:10.5px;color:var(--accent);">클릭하면 이 해역으로 확대됩니다</div>
+    <div style="margin-top:4px;font-size:10.5px;color:var(--accent);">${t('tooltipClickZoom')}</div>
   `;
 }
 
@@ -165,18 +174,19 @@ export function renderFleetSummaryHtml(vessels) {
       ).toFixed(1)
     : '0.0';
   const sources = new Set(vessels.map((v) => String(v.source || 'live').split(':')[0])).size;
+  const isKo = getLang() === 'ko';
   return `
     <div class="fleet-stat">
-      <span>항해 / 수신</span>
-      <strong class="mono">${moving}/${count}척</strong>
+      <span>${isKo ? '항해 / 수신' : 'Moving / Total'}</span>
+      <strong class="mono">${moving.toLocaleString()}/${count.toLocaleString()}</strong>
     </div>
     <div class="fleet-stat">
-      <span>운항 평균속력</span>
+      <span>${t('summaryAvgSpeed')}</span>
       <strong class="mono">${avgSpeed} kn</strong>
     </div>
     <div class="fleet-stat">
-      <span>실시간 소스</span>
-      <strong class="mono">${sources}개 피드</strong>
+      <span>${isKo ? '실시간 소스' : 'Live Feeds'}</span>
+      <strong class="mono">${sources}${isKo ? '개 피드' : ' feeds'}</strong>
     </div>
   `;
 }
@@ -189,11 +199,12 @@ export function renderVirtualVesselList(
   containerEl,
   vessels,
   selectedMmsi,
-  emptyMessage = '실시간 AIS 데이터를 수신 대기 중입니다...',
+  emptyMessage = null,
   favoritesSet = null
 ) {
+  const emptyText = emptyMessage || t('emptyLoadingServer');
   if (!vessels || vessels.length === 0) {
-    containerEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);line-height:1.6;">${escapeHtml(emptyMessage)}</div>`;
+    containerEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text-muted);line-height:1.6;">${escapeHtml(emptyText)}</div>`;
     return;
   }
 
@@ -215,7 +226,7 @@ export function renderVirtualVesselList(
     const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
     const sel = v.mmsi === selectedMmsi ? 'selected' : '';
     const favMark = favoritesSet && favoritesSet.has(v.mmsi)
-      ? '<span class="fav-star" title="관심 선박">★</span>'
+      ? `<span class="fav-star" title="${t('favFilter')}">★</span>`
       : '';
     html += `
       <button class="vessel-item ${sel}" data-mmsi="${escapeHtml(v.mmsi)}" role="listitem" style="min-height:${ROW_H - 4}px;">
@@ -227,11 +238,11 @@ export function renderVirtualVesselList(
           <span class="vessel-speed mono">${v.sog} kn · ${v.cog}°</span>
         </div>
         <div class="vessel-item-sub">
-          <span>${meta.short} · ${escapeHtml(v.flagName || v.flagCode)} · <span class="mono">${escapeHtml(v.mmsi)}</span></span>
+          <span>${getVesselTypeLabel(meta, true)} · ${escapeHtml(v.flagName || v.flagCode)} · <span class="mono">${escapeHtml(v.mmsi)}</span></span>
           <span class="mono">${formatAge(v.updatedAt)}</span>
         </div>
         <div class="vessel-item-sub" style="font-size:10px;">
-          <span>목적지: ${escapeHtml(v.destination || '미보고')}</span>
+          <span>${t('tooltipDest')}: ${escapeHtml(v.destination || t('lblUnreported'))}</span>
           <span class="mono">${escapeHtml(shortSource(v.source))}${v.length ? ` · ${v.length}m` : ''}</span>
         </div>
       </button>
@@ -254,15 +265,16 @@ export function renderInspectorBodyHtml(
   const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
   const kmh = ((Number(v.sog) || 0) * 1.852).toFixed(1);
   const updatedStr = v.updatedAt ? new Date(v.updatedAt).toISOString().slice(11, 19) + ' UTC' : '-';
+  const na = t('lblUnreported');
   const rotText =
     v.rot !== null && v.rot !== undefined
       ? `${v.rot > 0 ? '+' : ''}${v.rot}°/min`
-      : '미보고';
+      : na;
   const hdgText =
-    v.heading !== null && v.heading !== undefined ? `${v.heading}°` : '미보고';
+    v.heading !== null && v.heading !== undefined ? `${v.heading}°` : na;
   const dimRef =
     v.dimA !== null || v.dimB !== null
-      ? `선수:${v.dimA ?? 0} 선미:${v.dimB ?? 0} 좌현:${v.dimC ?? 0} 우현:${v.dimD ?? 0}m`
+      ? t('lblDimRef', { a: v.dimA ?? 0, b: v.dimB ?? 0, c: v.dimC ?? 0, d: v.dimD ?? 0 })
       : '';
 
   const trailRows = (v.trail || [])
@@ -275,78 +287,78 @@ export function renderInspectorBodyHtml(
     .join('');
 
   return `
-    <div class="sheet-handle" id="inspector-handle" role="button" tabindex="0" aria-label="상세 패널 크기 전환"><span></span></div>
+    <div class="sheet-handle" id="inspector-handle" role="button" tabindex="0" aria-label="Toggle panel height"><span></span></div>
     <div class="inspector-head">
       <div style="min-width:0;">
         <h2 class="inspector-title">${escapeHtml(v.name)}</h2>
         <div class="inspector-sub">
           <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:5px;"></span>
-          ${escapeHtml(v.aisTypeDesc || meta.label)}${v.near ? ` · ${escapeHtml(v.near)}` : ''}
+          ${escapeHtml(v.aisTypeDesc || getVesselTypeLabel(meta, false))}${v.near ? ` · ${escapeHtml(v.near)}` : ''}
         </div>
         <div class="badge-row">
           <span class="mini-badge mono">${escapeHtml(v.aisClass || 'Class A')}</span>
           <span class="mini-badge">${escapeHtml(v.flagName || v.flagCode)} (${escapeHtml(v.flagCode || '-')})</span>
           <span class="mini-badge mono">SRC: ${escapeHtml(shortSource(v.source))}</span>
-          ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">상세·24시간 항적 조회 중...</span>` : ''}
+          ${isLoadingDetails ? `<span class="mini-badge" style="color:var(--accent);">${t('inspectorLoading')}</span>` : ''}
         </div>
       </div>
       <div class="inspector-head-btns">
-        <button id="btn-favorite-vessel" class="btn btn-icon ${isFavorite ? 'fav-active' : ''}" title="${isFavorite ? '관심 선박 해제' : '관심 선박 등록'}" aria-label="관심 선박 토글">${isFavorite ? '★' : '☆'}</button>
-        <button id="btn-close-inspector" class="btn btn-icon" title="닫기" aria-label="닫기">✕</button>
+        <button id="btn-favorite-vessel" class="btn btn-icon ${isFavorite ? 'fav-active' : ''}" title="${isFavorite ? t('inspectorFavRemove') : t('inspectorFavAdd')}" aria-label="${t('inspectorFavAdd')}">${isFavorite ? '★' : '☆'}</button>
+        <button id="btn-close-inspector" class="btn btn-icon" title="${t('inspectorClose')}" aria-label="${t('inspectorClose')}">✕</button>
       </div>
     </div>
 
-    <div class="section-label">실시간 항해 텔레메트리 (Live AIS)</div>
+    <div class="section-label">${t('secLiveTelemetry')}</div>
     <div class="kv-grid">
       <div class="kv-cell full">
-        <div class="kv-label">실시간 GPS 좌표 (Decimal / DMS)</div>
+        <div class="kv-label">${t('lblGpsCoord')}</div>
         <div class="kv-value mono">${Number(v.lat).toFixed(5)}°, ${Number(v.lon).toFixed(5)}°</div>
         <div class="kv-sub mono">${formatDms(v.lat, true)} · ${formatDms(v.lon, false)} · ${updatedStr} (${formatAge(v.updatedAt)})</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">대지속력 (SOG)</div>
+        <div class="kv-label">${t('lblSog')}</div>
         <div class="kv-value mono">${v.sog} kn</div>
         <div class="kv-sub mono">${kmh} km/h</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">침로 (COG) / 선수 (HDG)</div>
+        <div class="kv-label">${t('lblCogHdg')}</div>
         <div class="kv-value mono">${v.cog}° ${compass16(v.cog)}</div>
         <div class="kv-sub mono">HDG ${hdgText} · ROT ${rotText}</div>
       </div>
       <div class="kv-cell full">
-        <div class="kv-label">AIS 항해 상태 (Navigational Status)</div>
-        <div class="kv-value">${escapeHtml(v.navStatus || '미지정')} <span class="mono" style="color:var(--text-muted);">(Code ${v.navStatusCode ?? 15})</span></div>
+        <div class="kv-label">${t('lblNavStatus')}</div>
+        <div class="kv-value">${escapeHtml(v.navStatus || na)} <span class="mono" style="color:var(--text-muted);">(Code ${v.navStatusCode ?? 15})</span></div>
       </div>
     </div>
 
-    <div class="section-label">항차 및 선박 제원 (Static AIS / Particulars)</div>
+    <div class="section-label">${t('secParticulars')}</div>
     <div class="kv-grid">
       <div class="kv-cell">
-        <div class="kv-label">AIS 보고 목적지</div>
-        <div class="kv-value mono">${escapeHtml(v.destination || '미보고')}</div>
+        <div class="kv-label">${t('lblDest')}</div>
+        <div class="kv-value mono">${escapeHtml(v.destination || na)}</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">AIS 보고 ETA</div>
-        <div class="kv-value mono">${escapeHtml(v.eta || '미보고')}</div>
+        <div class="kv-label">${t('lblEta')}</div>
+        <div class="kv-value mono">${escapeHtml(v.eta || na)}</div>
       </div>
       <div class="kv-cell">
         <div class="kv-label">MMSI / IMO</div>
         <div class="kv-value mono">${escapeHtml(v.mmsi)}</div>
-        <div class="kv-sub mono">IMO ${escapeHtml(v.imo || '미보고')}</div>
+        <div class="kv-sub mono">IMO ${escapeHtml(v.imo || na)}</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">호출부호 (Call Sign)</div>
-        <div class="kv-value mono">${escapeHtml(v.callsign || '미보고')}</div>
-        <div class="kv-sub">${v.builtYear ? `${v.builtYear}년 건조` : (v.firstSeen ? `최초 포착 ${v.firstSeen.slice(0, 10)}` : '건조연도 미보고')}</div>
+        <div class="kv-label">${t('lblCallsign')}</div>
+        <div class="kv-value mono">${escapeHtml(v.callsign || na)}</div>
+        <div class="kv-sub">${v.builtYear ? t('lblBuiltYear', { year: v.builtYear }) : (v.firstSeen ? t('lblFirstSeen', { date: v.firstSeen.slice(0, 10) }) : t('lblBuiltUnknown'))}</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">전장(LOA) × 선폭(Beam)</div>
-        <div class="kv-value mono">${v.length ? `${v.length}m × ${v.beam ?? '?'}m` : '미보고'}</div>
-        ${dimRef ? `<div class="kv-sub mono">${dimRef}</div>` : `<div class="kv-sub mono">흘수 ${v.draught ? `${v.draught}m` : '미보고'}</div>`}
+        <div class="kv-label">${t('lblLoaBeam')}</div>
+        <div class="kv-value mono">${v.length ? `${v.length}m × ${v.beam ?? '?'}m` : na}</div>
+        ${dimRef ? `<div class="kv-sub mono">${dimRef}</div>` : `<div class="kv-sub mono">${t('lblDraughtShort')} ${v.draught ? `${v.draught}m` : na}</div>`}
       </div>
       <div class="kv-cell">
-        <div class="kv-label">흘수 / 등록 톤수</div>
-        <div class="kv-value mono">${v.draught ? `${v.draught}m` : '흘수 미보고'}</div>
+        <div class="kv-label">${t('lblDraughtTon')}</div>
+        <div class="kv-value mono">${v.draught ? `${v.draught}m` : t('lblDraughtNA')}</div>
         <div class="kv-sub mono">DWT ${formatNum(v.dwt, 't')} · GT ${formatNum(v.grossTonnage)}</div>
       </div>
     </div>
@@ -354,41 +366,41 @@ export function renderInspectorBodyHtml(
     ${
       marineWeather
         ? `
-    <div class="section-label">실시간 해상 기상 (Open-Meteo Marine)</div>
+    <div class="section-label">${t('secMarineWeather')}</div>
     <div class="kv-grid">
       <div class="kv-cell">
-        <div class="kv-label">유의파고 / 파주기</div>
+        <div class="kv-label">${t('lblWave')}</div>
         <div class="kv-value mono">${marineWeather.waveHeight != null ? `${marineWeather.waveHeight.toFixed(1)} m` : '-'}</div>
-        <div class="kv-sub mono">${marineWeather.wavePeriod != null ? `주기 ${marineWeather.wavePeriod.toFixed(1)}s` : '해역 데이터'} ${marineWeather.waveDir != null ? `· ${Math.round(marineWeather.waveDir)}° ${compass16(marineWeather.waveDir)}` : ''}</div>
+        <div class="kv-sub mono">${marineWeather.wavePeriod != null ? t('lblWavePeriod', { p: marineWeather.wavePeriod.toFixed(1) }) : t('lblMarineData')} ${marineWeather.waveDir != null ? `· ${Math.round(marineWeather.waveDir)}° ${compass16(marineWeather.waveDir)}` : ''}</div>
       </div>
       <div class="kv-cell">
-        <div class="kv-label">해상 풍속 / 수온</div>
+        <div class="kv-label">${t('lblWindTemp')}</div>
         <div class="kv-value mono">${marineWeather.windKn != null ? `${marineWeather.windKn.toFixed(1)} kn` : '-'} ${marineWeather.windDir != null ? compass16(marineWeather.windDir) : ''}</div>
-        <div class="kv-sub mono">${marineWeather.seaTemp != null ? `해수온 ${marineWeather.seaTemp.toFixed(1)}°C` : '실시간 기상'}</div>
+        <div class="kv-sub mono">${marineWeather.seaTemp != null ? t('lblSeaTemp', { t: marineWeather.seaTemp.toFixed(1) }) : t('lblLiveWeather')}</div>
       </div>
     </div>`
         : ''
     }
 
-    <div class="section-label">수신 기지국 및 출처 (Feed Provenance)</div>
+    <div class="section-label">${t('secProvenance')}</div>
     <div class="kv-grid">
       <div class="kv-cell full">
-        <div class="kv-label">수신 네트워크 / 스테이션 / 채널</div>
+        <div class="kv-label">${t('lblNetworkStation')}</div>
         <div class="kv-value mono">${escapeHtml(v.source || 'live')}${v.station ? ` · ${escapeHtml(v.station)}` : ''}${v.channel ? ` (CH ${escapeHtml(v.channel)})` : ''}</div>
         ${v.attribution ? `<div class="kv-sub">${escapeHtml(v.attribution)}</div>` : ''}
       </div>
     </div>
 
-    <div class="section-label">실제 수신 항적 좌표 (${(v.trail || []).length}개 지점)</div>
-    <div class="trail-log">${trailRows || '<div>수신된 항적 기록이 없습니다.</div>'}</div>
+    <div class="section-label">${t('secTrackLog', { count: (v.trail || []).length })}</div>
+    <div class="trail-log">${trailRows || `<div>${t('noTrackLog')}</div>`}</div>
 
     <div class="inspector-actions">
       <button id="btn-follow-vessel" class="btn btn-primary ${followSelected ? 'active' : ''}">
-        ${followSelected ? '추적 잠금 해제' : '카메라 추적 잠금'}
+        ${followSelected ? t('btnFollowOn') : t('btnFollowOff')}
       </button>
-      <button id="btn-center-vessel" class="btn">위치로 이동</button>
-      <button id="btn-measure-from-vessel" class="btn btn-icon" title="이 선박에서 거리·ETA 측정" aria-label="이 선박에서 거리 측정">📏</button>
-      <button id="btn-share-vessel" class="btn btn-icon" title="이 선박 링크 복사" aria-label="선박 링크 복사">🔗</button>
+      <button id="btn-center-vessel" class="btn">${t('btnCenter')}</button>
+      <button id="btn-measure-from-vessel" class="btn btn-icon" title="${t('btnMeasureFromVessel')}" aria-label="${t('btnMeasureFromVessel')}">📏</button>
+      <button id="btn-share-vessel" class="btn btn-icon" title="${t('btnShareVessel')}" aria-label="${t('btnShareVessel')}">🔗</button>
     </div>
   `;
 }
@@ -398,7 +410,7 @@ export function renderInspectorBodyHtml(
  */
 export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi, favoritesSet = null) {
   if (!vessels || !vessels.length) {
-    tbodyEl.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">현재 수신된 실시간 선박이 없습니다.</td></tr>`;
+    tbodyEl.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:24px;color:var(--text-muted);">${t('tableEmpty')}</td></tr>`;
     return;
   }
 
@@ -420,7 +432,7 @@ export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi, 
     const meta = VESSEL_TYPES[v.type] || VESSEL_TYPES.bulk;
     const sel = v.mmsi === selectedMmsi ? 'selected' : '';
     const favMark = favoritesSet && favoritesSet.has(v.mmsi)
-      ? '<span class="fav-star" title="관심 선박">★</span> '
+      ? `<span class="fav-star" title="${t('favFilter')}">★</span> `
       : '';
     html += `
       <tr class="${sel}" data-mmsi="${escapeHtml(v.mmsi)}" style="height:${ROW_H}px;">
@@ -429,7 +441,7 @@ export function renderVirtualFleetTable(wrapEl, tbodyEl, vessels, selectedMmsi, 
           <span class="type-dot" style="background:${meta.color};display:inline-block;margin-right:6px;"></span>
           ${favMark}${escapeHtml(v.name)}
         </td>
-        <td>${meta.short}</td>
+        <td>${getVesselTypeLabel(meta, true)}</td>
         <td class="mono">${escapeHtml(v.aisClass || 'A')}</td>
         <td>${escapeHtml(v.flagName || v.flagCode)}</td>
         <td class="mono">${escapeHtml(v.mmsi)}</td>
