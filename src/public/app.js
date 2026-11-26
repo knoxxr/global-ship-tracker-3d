@@ -12,6 +12,8 @@ import {
   renderFleetSummaryHtml,
   renderVirtualVesselList,
   renderInspectorBodyHtml,
+  renderVosHoverTooltipHtml,
+  renderVosInspectorHtml,
   renderVirtualFleetTable,
 } from './telemetry-ui.js';
 import {
@@ -60,7 +62,9 @@ const state = {
   allVessels: [],
   filteredVessels: [],
   tableVessels: [],
+  vosShips: [],
   selectedMmsi: null,
+  selectedVos: null,
   selectedWeather: null,
   portFilter: null,
   pendingDeepLinkMmsi: deepLink.mmsi || null,
@@ -115,12 +119,23 @@ const globe = new GlobeEngine(dom.canvas, {
   theme: state.theme,
   lang: state.lang,
   onSelectVessel: (vessel) => selectVessel(vessel.mmsi, true),
+  onSelectVos: (vos) => selectVosShip(vos, true),
   onHoverVessel: (vessel, mx, my) => {
     if (!vessel) {
       dom.hoverTooltip.classList.add('hidden');
       return;
     }
     dom.hoverTooltip.innerHTML = renderHoverTooltipHtml(vessel);
+    dom.hoverTooltip.style.left = `${Math.min(window.innerWidth - 290, mx + 14)}px`;
+    dom.hoverTooltip.style.top = `${Math.max(70, my - 12)}px`;
+    dom.hoverTooltip.classList.remove('hidden');
+  },
+  onHoverVos: (vos, mx, my) => {
+    if (!vos) {
+      dom.hoverTooltip.classList.add('hidden');
+      return;
+    }
+    dom.hoverTooltip.innerHTML = renderVosHoverTooltipHtml(vos);
     dom.hoverTooltip.style.left = `${Math.min(window.innerWidth - 290, mx + 14)}px`;
     dom.hoverTooltip.style.top = `${Math.max(70, my - 12)}px`;
     dom.hoverTooltip.classList.remove('hidden');
@@ -170,7 +185,6 @@ const globe = new GlobeEngine(dom.canvas, {
     }
   },
 });
-globe.setOption('showLanes', false);
 
 const savePrefs = () => persistPrefs(state, globe);
 
@@ -223,6 +237,18 @@ function renderFleetTable(recompute = true) {
 }
 
 function renderInspector() {
+  if (state.selectedVos && !state.selectedMmsi) {
+    const prevScroll = dom.inspector.scrollTop;
+    dom.inspector.classList.remove('hidden');
+    document.body.classList.add('inspector-open');
+    const nextHtml = renderVosInspectorHtml(state.selectedVos);
+    if (dom.inspector._lastHtml !== nextHtml) {
+      dom.inspector._lastHtml = nextHtml;
+      dom.inspector.innerHTML = nextHtml;
+      dom.inspector.scrollTop = prevScroll;
+    }
+    return;
+  }
   if (!state.selectedMmsi) {
     dom.inspector.classList.add('hidden');
     document.body.classList.remove('inspector-open');
@@ -337,10 +363,36 @@ const ui = bindSharedUi({
   onLangChange: () => {
     updatePresetLabels();
     updateStatusUI(state.status);
+    updateVosButtonLabel();
   },
 });
 
+function updateVosButtonLabel() {
+  if (!dom.btnVos) return;
+  dom.btnVos.textContent =
+    state.vosShips.length > 0
+      ? t('vosBtnCount', { count: state.vosShips.length.toLocaleString() })
+      : t('btnVos');
+}
+
+function selectVosShip(vos, fly = false) {
+  if (!vos) return;
+  state.selectedMmsi = null;
+  state.selectedWeather = null;
+  state.followSelected = false;
+  state.selectedVos = vos;
+  if (isMobileViewport()) {
+    ui.setSidebarOpen(false);
+    dom.inspector.classList.remove('expanded');
+  }
+  globe.setSelectedVos(vos.id);
+  if (fly) globe.flyTo(vos.lat, vos.lon, Math.max(globe.zoom, 3.6), 650);
+  renderVisibleList();
+  renderInspector();
+}
+
 async function selectVessel(mmsi, fly = false) {
+  state.selectedVos = null;
   state.selectedMmsi = mmsi;
   state.selectedWeather = null;
   const v = state.vesselsMap.get(mmsi);
@@ -534,6 +586,26 @@ setInterval(() => {
   }
 }, 2000);
 
+async function loadVosShips() {
+  try {
+    const res = await fetch('/api/vos');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data?.ships) && data.ships.length > 0) {
+      state.vosShips = data.ships;
+      globe.setVosShips(data.ships);
+      updateVosButtonLabel();
+    }
+  } catch {
+    // non-fatal: AIS continues normally if NOAA NDBC is temporarily unreachable
+  }
+}
+
+setInterval(() => {
+  loadVosShips().catch(() => {});
+}, 15 * 60 * 1000);
+
 registerAppServiceWorker('/sw.js');
 renderPresets();
 connectStream();
+loadVosShips();

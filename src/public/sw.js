@@ -42,9 +42,10 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
-  // Never intercept cross-origin live AIS feeds or local backend API/SSE routes
+  // Never intercept cross-origin live AIS feeds, local backend API/SSE routes, or fresh VOS snapshots
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
+  if (url.pathname.endsWith('vos-latest.json')) return;
 
   // Network-first for HTML documents so deployments propagate immediately
   if (request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname.endsWith('/')) {

@@ -28,7 +28,11 @@ import {
   sortVesselsByColumn,
   escapeCsvCell,
   renderInspectorBodyHtml,
+  renderVosHoverTooltipHtml,
+  renderVosInspectorHtml,
 } from '../src/public/telemetry-ui.js';
+import { parseNdBcShipObsHtml } from '../src/vos-parser.js';
+import { SHIPPING_LANES, SHIPPING_LANES_META } from '../src/public/shipping-lanes.js';
 import {
   filterVesselsList,
   createFavoriteMonitor,
@@ -605,6 +609,79 @@ describe('Nautical Analysis Tools, Port Geofence & Favorite Status Alerts', () =
     setLang('en');
   });
 });
+
+describe('Open-Ocean Coverage: NOAA/WMO VOS Parser & Global Shipping Lanes', () => {
+  it('parses NOAA NDBC ship_obs.php HTML, deduplicates positions, handles UTC day rollover, and converts units', () => {
+    const sampleHtml = `
+      <p class="obs-count">3 observations from 11/25/2026 2100 GMT to 11/26/2026 0230 GMT</p>
+      <pre class="wide-content">
+      <span>SHIP     02  35.2 -152.4  240  10.0  13.5   2.4   9.0 1012.3  -1.2  16.5  18.2  12.0  15.0  4  -  -  -  -  -  - ---- -----</span>
+      <span>SHIP     23  35.2 -152.4  220   5.0     -     -     - 1014.0  +0.1  15.0     -     -     -  -  -  -  -  -  -  - ---- -----</span>
+      <span>SHIP     23 -12.8   74.6   90   7.2     -   1.8   7.0 1008.7  +0.4  27.4  28.1     -  20.0  2  -  -  -  -  -  - ---- -----</span>
+      <span>SHIP     02   0.0    0.0    -     -     -     -     -      -     -     -     -     -     -  -  -  -  -  -  -  - ---- -----</span>
+      </pre>
+    `;
+    const parsed = parseNdBcShipObsHtml(sampleHtml);
+    assert.equal(parsed.totalObservations, 3); // (0,0) rejected
+    assert.equal(parsed.count, 2); // duplicate (35.2, -152.4) keeps newer 02 UTC obs
+
+    const pac = parsed.ships.find((s) => s.lat === 35.2);
+    assert.ok(pac);
+    assert.equal(pac.hourUtc, 2);
+    assert.equal(pac.observedAt, Date.UTC(2026, 10, 26, 2, 0, 0));
+    assert.equal(pac.windMs, 10);
+    assert.equal(pac.windKn, 19.4);
+    assert.equal(pac.waveM, 2.4);
+    assert.equal(pac.presHpa, 1012.3);
+    assert.equal(pac.seaTempC, 18.2);
+
+    const ind = parsed.ships.find((s) => s.lat === -12.8);
+    assert.ok(ind);
+    // Hour 23 relative to 02:30 GMT on Nov 26 resolves to previous day Nov 25 23:00 UTC
+    assert.equal(ind.observedAt, Date.UTC(2026, 10, 25, 23, 0, 0));
+
+    // VOS tooltip & inspector render cleanly in both EN and KO
+    setLang('en');
+    const tipEn = renderVosHoverTooltipHtml(pac);
+    assert.ok(tipEn.includes('Open-Ocean Ship (NOAA/WMO VOS)'));
+    assert.ok(tipEn.includes('19.4 kn'));
+    const inspEn = renderVosInspectorHtml(pac);
+    assert.ok(inspEn.includes('1012.3 hPa'));
+    assert.ok(inspEn.includes('btn-measure-from-vos'));
+
+    setLang('ko');
+    const inspKo = renderVosInspectorHtml(pac);
+    assert.ok(inspKo.includes('대양 기상보고 선박'));
+    assert.ok(inspKo.includes('실측 파고'));
+    setLang('en');
+  });
+
+  it('ships a valid, antimeridian-split Global Shipping Lanes dataset across Major, Middle, and Minor tiers', () => {
+    assert.ok(SHIPPING_LANES_META.majorCount > 20);
+    assert.ok(SHIPPING_LANES_META.middleCount > 50);
+    assert.ok(SHIPPING_LANES_META.minorCount > 20);
+    for (const tier of ['major', 'middle', 'minor']) {
+      const lines = SHIPPING_LANES[tier];
+      assert.ok(Array.isArray(lines) && lines.length > 0);
+      for (const flat of lines) {
+        assert.ok(flat.length >= 4 && flat.length % 2 === 0);
+        for (let i = 0; i < flat.length; i += 2) {
+          const lon = flat[i];
+          const lat = flat[i + 1];
+          assert.ok(lon >= -180 && lon <= 180, `Invalid lon ${lon}`);
+          assert.ok(lat >= -85 && lat <= 85, `Invalid lat ${lat}`);
+          if (i >= 2) {
+            assert.ok(
+              Math.abs(lon - flat[i - 2]) <= 180,
+              `Unsplit antimeridian segment in ${tier}: ${flat[i - 2]} -> ${lon}`
+            );
+          }
+        }
+      }
+    }
+  });
+});
+
 
 
 

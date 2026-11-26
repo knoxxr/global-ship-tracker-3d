@@ -405,6 +405,122 @@ export function renderInspectorBodyHtml(
   `;
 }
 
+export function renderVosHoverTooltipHtml(vos) {
+  const obsUtc = vos.observedAt
+    ? new Date(vos.observedAt).toISOString().slice(11, 16) + 'Z'
+    : `${String(vos.hourUtc ?? 0).padStart(2, '0')}:00Z`;
+  const windStr =
+    vos.windKn != null
+      ? `${vos.windKn} kn${vos.windDir != null ? ` (${vos.windDir}° ${compass16(vos.windDir)})` : ''}`
+      : '-';
+  const waveStr =
+    vos.waveM != null
+      ? `${vos.waveM} m${vos.waveSec != null ? ` · ${vos.waveSec}s` : ''}`
+      : '-';
+  const presStr = vos.presHpa != null ? `${vos.presHpa} hPa` : '-';
+  const tempStr =
+    vos.seaTempC != null || vos.airTempC != null
+      ? `${vos.airTempC != null ? `${vos.airTempC}°C` : '-'} / ${vos.seaTempC != null ? `${vos.seaTempC}°C` : '-'}`
+      : '-';
+
+  return `
+    <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:12px;">
+      <span style="display:inline-block;width:8px;height:8px;transform:rotate(45deg);background:#2dd4bf;flex-shrink:0;"></span>
+      <span>${t('vosBadge')}</span>
+    </div>
+    <div class="mono" style="margin-top:4px;font-size:11px;line-height:1.5;">
+      <div>${formatCoordShort(vos.lat, true)} / ${formatCoordShort(vos.lon, false)} · ${obsUtc} (${formatAge(vos.observedAt)})</div>
+      <div>${t('vosWind')}: ${escapeHtml(windStr)}</div>
+      <div>${t('vosWave')}: ${escapeHtml(waveStr)} · ${t('vosPressure')}: ${escapeHtml(presStr)}</div>
+      <div>${t('vosTemps')}: ${escapeHtml(tempStr)}</div>
+    </div>
+    <div style="margin-top:4px;font-size:10.5px;color:#2dd4bf;">${t('vosClickInspect')}</div>
+  `;
+}
+
+export function renderVosInspectorHtml(vos) {
+  const na = t('lblUnreported');
+  const obsIso = vos.observedAt
+    ? `${new Date(vos.observedAt).toISOString().slice(0, 16).replace('T', ' ')} UTC`
+    : `${String(vos.hourUtc ?? 0).padStart(2, '0')}:00 UTC`;
+  const gustKn = vos.gustMs != null ? (vos.gustMs * 1.94384).toFixed(1) : null;
+
+  return `
+    <div class="sheet-handle-wrap" id="inspector-handle" aria-hidden="true"><div class="sheet-handle"></div></div>
+    <div class="inspector-header">
+      <div>
+        <div class="inspector-title">
+          <span style="display:inline-block;width:9px;height:9px;transform:rotate(45deg);background:#2dd4bf;margin-right:4px;flex-shrink:0;"></span>
+          <span>${t('vosBadge')}</span>
+        </div>
+        <div class="inspector-sub">
+          ${t('vosSubtitle')} · ${escapeHtml(vos.source || 'NOAA/WMO VOS')}
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button id="btn-close-inspector" class="btn btn-icon" title="${t('btnClose')}" aria-label="${t('btnClose')}">✕</button>
+      </div>
+    </div>
+
+    <div class="section-label">${t('secVosPosition')}</div>
+    <div class="kv-grid">
+      <div class="kv-cell">
+        <div class="kv-label">${t('lblLat')}</div>
+        <div class="kv-value mono">${formatDms(vos.lat, true)}</div>
+        <div class="kv-sub mono">${Number(vos.lat).toFixed(1)}°</div>
+      </div>
+      <div class="kv-cell">
+        <div class="kv-label">${t('lblLon')}</div>
+        <div class="kv-value mono">${formatDms(vos.lon, false)}</div>
+        <div class="kv-sub mono">${Number(vos.lon).toFixed(1)}°</div>
+      </div>
+      <div class="kv-cell full">
+        <div class="kv-label">${t('vosObsTime')}</div>
+        <div class="kv-value mono">${escapeHtml(obsIso)}</div>
+        <div class="kv-sub mono">${formatAge(vos.observedAt)}</div>
+      </div>
+    </div>
+
+    <div class="section-label">${t('secVosWeather')}</div>
+    <div class="kv-grid">
+      <div class="kv-cell">
+        <div class="kv-label">${t('vosWind')}</div>
+        <div class="kv-value mono">${vos.windKn != null ? `${vos.windKn} kn` : na} ${vos.windDir != null ? compass16(vos.windDir) : ''}</div>
+        <div class="kv-sub mono">${vos.windMs != null ? `${vos.windMs} m/s` : ''}${vos.windDir != null ? ` · ${vos.windDir}°` : ''}${gustKn ? ` · ${t('lblGust', { g: gustKn })}` : ''}</div>
+      </div>
+      <div class="kv-cell">
+        <div class="kv-label">${t('vosWave')}</div>
+        <div class="kv-value mono">${vos.waveM != null ? `${vos.waveM} m` : na}</div>
+        <div class="kv-sub mono">${vos.waveSec != null ? t('lblWavePeriod', { p: vos.waveSec }) : na}</div>
+      </div>
+      <div class="kv-cell">
+        <div class="kv-label">${t('vosPressure')}</div>
+        <div class="kv-value mono">${vos.presHpa != null ? `${vos.presHpa} hPa` : na}</div>
+        <div class="kv-sub mono">${vos.visKm != null ? `${t('vosVisibility')} ${vos.visKm} km` : t('lblLiveWeather')}</div>
+      </div>
+      <div class="kv-cell">
+        <div class="kv-label">${t('vosTemps')}</div>
+        <div class="kv-value mono">${vos.seaTempC != null ? t('lblSeaTemp', { t: vos.seaTempC }) : na}</div>
+        <div class="kv-sub mono">${vos.airTempC != null ? t('lblAirTemp', { t: vos.airTempC }) : na}</div>
+      </div>
+    </div>
+
+    <div class="section-label">${t('secProvenance')}</div>
+    <div class="kv-grid">
+      <div class="kv-cell full">
+        <div class="kv-label">NOAA NDBC · WMO VOS</div>
+        <div class="kv-sub" style="line-height:1.45;margin-top:2px;">${t('vosPrecisionNote')}</div>
+      </div>
+    </div>
+
+    <div class="inspector-actions">
+      <button id="btn-center-vos" class="btn btn-primary">${t('btnCenter')}</button>
+      <button id="btn-measure-from-vos" class="btn btn-icon" title="${t('btnMeasureFromVessel')}" aria-label="${t('btnMeasureFromVessel')}">📏</button>
+      <button id="btn-share-vos" class="btn btn-icon" title="${t('btnShareVessel')}" aria-label="${t('btnShareVessel')}">🔗</button>
+    </div>
+  `;
+}
+
 /**
  * Virtualized full-fleet table renderer: smoothly scrolls 20,000+ live vessels.
  */

@@ -28,6 +28,7 @@ import {
   parseDigitrafficData,
   parseAisStreamMessage,
 } from './ais-parser.js';
+import { fetchLiveVosShips } from './vos-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,7 @@ const BBOX_CACHE_TTL_MS = 3 * 60 * 1000;
 const VESSEL_ENRICH_TTL_MS = 2 * 60 * 1000;
 const WS_RESUBSCRIBE_MIN_INTERVAL_MS = 15 * 1000;
 const SNAPSHOT_CACHE_TTL_MS = 2000;
+const VOS_CACHE_TTL_MS = 10 * 60 * 1000;
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -101,6 +103,9 @@ export class ShipTrackerServer {
 
     this._cachedSnapshotPayload = null;
     this._cachedSnapshotAt = 0;
+    this._vosCache = null;
+    this._vosCacheAt = 0;
+    this._vosInFlight = null;
 
     this.rateGuard = new ApiRateGuard({
       maxBurst: options.maxBurst ?? 24,
@@ -640,6 +645,29 @@ export class ShipTrackerServer {
     }, 1000);
   }
 
+  async getVosShips() {
+    const now = Date.now();
+    if (this._vosCache && now - this._vosCacheAt < VOS_CACHE_TTL_MS) {
+      return this._vosCache;
+    }
+    if (this._vosInFlight) return this._vosInFlight;
+
+    this._vosInFlight = fetchLiveVosShips(6)
+      .then((data) => {
+        this._vosCache = data;
+        this._vosCacheAt = Date.now();
+        return data;
+      })
+      .catch((err) => {
+        if (this._vosCache) return this._vosCache;
+        throw err;
+      })
+      .finally(() => {
+        this._vosInFlight = null;
+      });
+    return this._vosInFlight;
+  }
+
   async _handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
@@ -660,6 +688,16 @@ export class ShipTrackerServer {
 
     if (pathname === '/api/zones' && req.method === 'GET') {
       return this._sendJson(res, 200, { zones: LIVE_ZONES }, req);
+    }
+
+    if (pathname === '/api/vos' && req.method === 'GET') {
+      try {
+        const data = await this.getVosShips();
+        res.setHeader('Cache-Control', 'public, max-age=600');
+        return this._sendJson(res, 200, data, req);
+      } catch (err) {
+        return this._sendJson(res, 502, { error: err.message, ships: [] }, req);
+      }
     }
 
     if (pathname === '/api/vessels' && req.method === 'GET') {

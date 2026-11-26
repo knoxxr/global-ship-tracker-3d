@@ -20,6 +20,7 @@ const FILES_TO_COPY = [
   ['src/public/world-geo-lite.js', 'world-geo-lite.js'],
   ['src/public/world-geo.js', 'world-geo.js'],
   ['src/public/world-data.js', 'world-data.js'],
+  ['src/public/shipping-lanes.js', 'shipping-lanes.js'],
   ['src/public/globe-engine.js', 'globe-engine.js'],
   ['src/public/telemetry-ui.js', 'telemetry-ui.js'],
   ['src/public/ui-controller.js', 'ui-controller.js'],

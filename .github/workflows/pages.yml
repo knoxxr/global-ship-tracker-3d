@@ -3,6 +3,9 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+  schedule:
+    # Refresh real NOAA/WMO VOS open-ocean ship observations every 3 hours (no git commits)
+    - cron: '0 */3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -26,6 +29,8 @@ jobs:
           node-version: 22
       - name: Build static Pages bundle
         run: npm run build:pages
+      - name: Refresh real NOAA/WMO VOS open-ocean ships
+        run: node scripts/fetch-vos.js
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

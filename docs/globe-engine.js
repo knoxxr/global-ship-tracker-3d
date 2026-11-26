@@ -14,9 +14,9 @@ import {
   WORLD_LAKES,
   PORTS_DATA,
   SEA_LABELS,
-  CORRIDOR_LINES,
   VESSEL_TYPES,
 } from './world-data.js';
+import { SHIPPING_LANES } from './shipping-lanes.js';
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
@@ -164,6 +164,8 @@ export class GlobeEngine {
     this.onHoverCluster = options.onHoverCluster || (() => {});
     this.onCameraChange = options.onCameraChange || (() => {});
     this.onSelectPort = options.onSelectPort || (() => {});
+    this.onSelectVos = options.onSelectVos || (() => {});
+    this.onHoverVos = options.onHoverVos || (() => {});
     this.onMeasureChange = options.onMeasureChange || (() => {});
 
     // Camera state (degrees) — deep zoom up to 1500x (harbor & terminal level!)
@@ -197,7 +199,8 @@ export class GlobeEngine {
     this.options = {
       autoRotate: false,
       showDayNight: true,
-      showLanes: false,
+      showLanes: true,
+      showVosShips: true,
       showPorts: true,
       showWakes: true,
       showClusters: true,
@@ -210,20 +213,31 @@ export class GlobeEngine {
 
     // Data state
     this.vessels = [];
+    this.vosShips = [];
     this.selectedMmsi = null;
+    this.selectedVosId = null;
     this.hoveredMmsi = null;
+    this.hoveredVosId = null;
     this.hoveredClusterId = null;
     this.followSelected = false;
     this.screenVessels = [];
+    this.screenVosShips = [];
     this.screenClusters = [];
 
     // Boot immediately with lightweight coastlines (~62KB), then lazy-upgrade to full 50m world-geo.js
     this.preparedPolygons = WORLD_POLYGONS.map((ring) => preparePath(ring, true, 4.5));
     this.preparedBorders = COUNTRY_BORDERS.map((line) => preparePath(line, false, 4.5));
     this.preparedLakes = WORLD_LAKES.map((ring) => preparePath(ring, true, 4.5));
-    this.preparedCorridors = CORRIDOR_LINES.map((line) =>
-      preparePath(line.map(([lat, lon]) => [lon, lat]), false, 3.0)
-    );
+    const prepFlatLane = (flat) => {
+      const pairs = [];
+      for (let i = 0; i < flat.length; i += 2) pairs.push([flat[i], flat[i + 1]]);
+      return preparePath(pairs, false, 3.0);
+    };
+    this.preparedShippingLanes = {
+      major: (SHIPPING_LANES.major || []).map(prepFlatLane),
+      middle: (SHIPPING_LANES.middle || []).map(prepFlatLane),
+      minor: (SHIPPING_LANES.minor || []).map(prepFlatLane),
+    };
     this._highResGeoLoaded = false;
 
     // On-demand high-zoom nautical chart + OpenSeaMap seamark tile cache (LRU)
@@ -338,7 +352,22 @@ export class GlobeEngine {
 
   setSelectedVessel(mmsi, follow = false) {
     this.selectedMmsi = mmsi;
+    if (mmsi) this.selectedVosId = null;
     this.followSelected = Boolean(mmsi && follow);
+    this._dirty = true;
+  }
+
+  setVosShips(ships) {
+    this.vosShips = Array.isArray(ships) ? ships : [];
+    this._dirty = true;
+  }
+
+  setSelectedVos(id) {
+    this.selectedVosId = id || null;
+    if (id) {
+      this.selectedMmsi = null;
+      this.followSelected = false;
+    }
     this._dirty = true;
   }
 
@@ -582,16 +611,18 @@ export class GlobeEngine {
       // Skip floating hover tooltips for touch pointers
       if (e.pointerType === 'touch') return;
 
-      // Check cluster hit first, then individual vessel
+      // Check cluster hit first, then individual AIS vessel, then open-ocean NOAA VOS ship
       const cluster = this._pickCluster(mx, my, false);
       if (cluster) {
-        if (this.hoveredClusterId !== cluster.id || this.hoveredMmsi !== null) {
+        if (this.hoveredClusterId !== cluster.id || this.hoveredMmsi !== null || this.hoveredVosId !== null) {
           this._dirty = true;
         }
         this.hoveredClusterId = cluster.id;
         this.hoveredMmsi = null;
+        this.hoveredVosId = null;
         this.canvas.style.cursor = 'pointer';
         this.onHoverVessel(null, 0, 0);
+        this.onHoverVos(null, 0, 0);
         this.onHoverCluster(cluster, mx, my);
         return;
       }
@@ -603,12 +634,31 @@ export class GlobeEngine {
 
       const hit = this._pickVessel(mx, my, false);
       const hitId = hit ? hit.mmsi : null;
-      if (hitId !== this.hoveredMmsi) {
-        this.hoveredMmsi = hitId;
-        this._dirty = true;
-        this.canvas.style.cursor = hit ? 'pointer' : 'grab';
+      if (hit) {
+        if (hitId !== this.hoveredMmsi || this.hoveredVosId !== null) {
+          this.hoveredMmsi = hitId;
+          this.hoveredVosId = null;
+          this._dirty = true;
+          this.canvas.style.cursor = 'pointer';
+        }
+        this.onHoverVos(null, 0, 0);
+        this.onHoverVessel(hit, mx, my);
+        return;
       }
-      this.onHoverVessel(hit, mx, my);
+      if (this.hoveredMmsi !== null) {
+        this.hoveredMmsi = null;
+        this._dirty = true;
+        this.onHoverVessel(null, 0, 0);
+      }
+
+      const vosHit = this._pickVosShip(mx, my, false);
+      const vosId = vosHit ? vosHit.id : null;
+      if (vosId !== this.hoveredVosId) {
+        this.hoveredVosId = vosId;
+        this._dirty = true;
+        this.canvas.style.cursor = vosHit ? 'pointer' : 'grab';
+      }
+      this.onHoverVos(vosHit, mx, my);
     });
 
     const endDrag = (e) => {
@@ -634,7 +684,7 @@ export class GlobeEngine {
       this.isPinching = false;
       this.canvas.style.cursor = this.measureMode
         ? 'crosshair'
-        : this.hoveredMmsi || this.hoveredClusterId
+        : this.hoveredMmsi || this.hoveredClusterId || this.hoveredVosId
           ? 'pointer'
           : 'grab';
 
@@ -647,12 +697,15 @@ export class GlobeEngine {
         // Great-circle distance/bearing/ETA ruler clicks
         if (this.measureMode) {
           const hitVessel = this._pickVessel(mx, my, isTouch);
-          const hitPort = !hitVessel ? this._pickPort(mx, my, isTouch) : null;
+          const hitVos = !hitVessel ? this._pickVosShip(mx, my, isTouch) : null;
+          const hitPort = !hitVessel && !hitVos ? this._pickPort(mx, my, isTouch) : null;
           const pos = hitVessel
             ? { lat: hitVessel.lat, lon: hitVessel.lon, label: hitVessel.name, speedKn: hitVessel.sog || 0 }
-            : hitPort
-              ? { lat: hitPort.lat, lon: hitPort.lon, label: hitPort.name }
-              : this.screenToLatLon(mx, my);
+            : hitVos
+              ? { lat: hitVos.lat, lon: hitVos.lon, label: 'NOAA VOS' }
+              : hitPort
+                ? { lat: hitPort.lat, lon: hitPort.lon, label: hitPort.name }
+                : this.screenToLatLon(mx, my);
           if (pos) {
             if (this.measurePoints.length >= 2) {
               this.measurePoints = [pos];
@@ -677,6 +730,12 @@ export class GlobeEngine {
         const hit = this._pickVessel(mx, my, isTouch);
         if (hit) {
           this.onSelectVessel(hit);
+          return;
+        }
+
+        const vosHit = this._pickVosShip(mx, my, isTouch);
+        if (vosHit) {
+          this.onSelectVos(vosHit);
           return;
         }
 
@@ -709,11 +768,15 @@ export class GlobeEngine {
     this.canvas.addEventListener('pointercancel', endDrag);
     this.canvas.addEventListener('pointerleave', () => {
       if (!this.isDragging) {
-        if (this.hoveredMmsi !== null || this.hoveredClusterId !== null) this._dirty = true;
+        if (this.hoveredMmsi !== null || this.hoveredClusterId !== null || this.hoveredVosId !== null) {
+          this._dirty = true;
+        }
         this.hoveredMmsi = null;
         this.hoveredClusterId = null;
+        this.hoveredVosId = null;
         this.onHoverVessel(null, 0, 0);
         this.onHoverCluster(null, 0, 0);
+        this.onHoverVos(null, 0, 0);
       }
     });
 
@@ -722,7 +785,7 @@ export class GlobeEngine {
       const rect = this.canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      if (this._pickCluster(mx, my, false) || this._pickVessel(mx, my, false)) return;
+      if (this._pickCluster(mx, my, false) || this._pickVessel(mx, my, false) || this._pickVosShip(mx, my, false)) return;
       const pos = this.screenToLatLon(mx, my);
       if (pos) {
         this.followSelected = false;
@@ -788,13 +851,28 @@ export class GlobeEngine {
     return best;
   }
 
+  _pickVosShip(mx, my, isTouch = false) {
+    if (!this.options.showVosShips || this.screenVosShips.length === 0) return null;
+    let best = null;
+    let bestDist = isTouch ? 24 : 12;
+    for (let i = this.screenVosShips.length - 1; i >= 0; i--) {
+      const item = this.screenVosShips[i];
+      const d = Math.hypot(item.sx - mx, item.sy - my);
+      if (d < bestDist) {
+        bestDist = d;
+        best = item.ship;
+      }
+    }
+    return best;
+  }
+
   start() {
     if (this._rafId) return;
     const loop = (ts) => {
       const dt = Math.min(0.05, (ts - this._lastFrameTs) / 1000);
       this._lastFrameTs = ts;
       const moved = this._updateCamera(ts, dt);
-      const pulseActive = Boolean(this.selectedMmsi);
+      const pulseActive = Boolean(this.selectedMmsi || this.selectedVosId);
       const idleTick = ts - this._lastRenderTs >= 1000;
       if (this._dirty || moved || pulseActive || idleTick) {
         this._dirty = false;
@@ -813,7 +891,7 @@ export class GlobeEngine {
 
   _updateCamera(ts, dt) {
     let moved = false;
-    const mobileSheetActive = this.width <= 768 && Boolean(this.selectedMmsi);
+    const mobileSheetActive = this.width <= 768 && Boolean(this.selectedMmsi || this.selectedVosId);
     const targetCy = mobileSheetActive ? this.height * 0.32 : this.height * 0.5;
     if (Math.abs(this.cy - targetCy) > 0.5) {
       this.cy += (targetCy - this.cy) * Math.min(1, dt * 9);
@@ -892,6 +970,12 @@ export class GlobeEngine {
         lakeFill: '#c5e0f2',
         seaLabel: 'rgba(15, 76, 117, 0.48)',
         laneStroke: 'rgba(14, 116, 144, 0.24)',
+        laneMajor: 'rgba(14, 116, 144, 0.34)',
+        laneMiddle: 'rgba(14, 116, 144, 0.20)',
+        laneMinor: 'rgba(14, 116, 144, 0.12)',
+        vosFill: '#0d9488',
+        vosGlow: 'rgba(13, 148, 136, 0.22)',
+        vosStroke: 'rgba(255, 255, 255, 0.92)',
         nightTint: 'rgba(15, 35, 58, 0.22)',
         portDot: '#0f766e',
         portLabel: '#0f172a',
@@ -918,6 +1002,12 @@ export class GlobeEngine {
       lakeFill: '#0a2035',
       seaLabel: 'rgba(148, 197, 233, 0.36)',
       laneStroke: 'rgba(56, 189, 248, 0.16)',
+      laneMajor: 'rgba(56, 189, 248, 0.30)',
+      laneMiddle: 'rgba(56, 189, 248, 0.17)',
+      laneMinor: 'rgba(148, 197, 233, 0.10)',
+      vosFill: '#2dd4bf',
+      vosGlow: 'rgba(45, 212, 191, 0.24)',
+      vosStroke: 'rgba(4, 15, 28, 0.88)',
       nightTint: 'rgba(2, 6, 14, 0.4)',
       portDot: '#38bdf8',
       portLabel: '#cbd5e1',
@@ -1023,7 +1113,7 @@ export class GlobeEngine {
     // 8. Nautical Sea & Strait Labels
     this._drawSeaLabels(ctx, P, sinPhi0, cosPhi0, lam0);
 
-    // 9. Reference Shipping Corridors
+    // 9. Global Commercial Shipping Lanes (Major / Middle / Minor)
     if (this.options.showLanes) {
       this._drawCorridors(ctx, P, sinPhi0, cosPhi0, lam0);
     }
@@ -1036,6 +1126,13 @@ export class GlobeEngine {
     }
     if (this.activePortFilter) {
       this._drawPortRadiusRing(ctx, P, sinPhi0, cosPhi0, lam0);
+    }
+
+    // 10.5. Real Open-Ocean Ships (NOAA / WMO Voluntary Observing Ships satellite weather reports)
+    if (this.options.showVosShips && this.vosShips.length > 0) {
+      this._drawVosShips(ctx, P, sinPhi0, cosPhi0, lam0, ts);
+    } else {
+      this.screenVosShips = [];
     }
 
     // 11. Vessels, Smart Clusters & Gradient AIS Tracks
@@ -1466,24 +1563,133 @@ export class GlobeEngine {
   }
 
   _drawCorridors(ctx, P, sinPhi0, cosPhi0, lam0) {
-    ctx.save();
-    ctx.strokeStyle = P.laneStroke;
-    ctx.lineWidth = Math.max(0.9, 0.95 * Math.sqrt(this.zoom));
-    ctx.setLineDash([4, 5]);
+    const tiers = [
+      { items: this.preparedShippingLanes.minor, stroke: P.laneMinor, width: 0.7, dash: [2, 4], minZoom: 1.6 },
+      { items: this.preparedShippingLanes.middle, stroke: P.laneMiddle, width: 0.95, dash: [4, 4], minZoom: 0.85 },
+      { items: this.preparedShippingLanes.major, stroke: P.laneMajor, width: 1.35, dash: [], minZoom: 0.85 },
+    ];
+    const zoomScale = Math.min(2.1, Math.max(0.85, Math.pow(this.zoom, 0.25)));
+    const maxJump = this.radius * 0.45;
+    const pad = 40;
 
-    for (const item of this.preparedCorridors) {
-      const pts = item.pts;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (const tier of tiers) {
+      if (this.zoom < tier.minZoom || !tier.items || tier.items.length === 0) continue;
+      ctx.strokeStyle = tier.stroke;
+      ctx.lineWidth = tier.width * zoomScale;
+      ctx.setLineDash(tier.dash);
       ctx.beginPath();
-      let drawing = false;
-      for (let i = 0; i < pts.length; i++) {
-        const p = this.projectRad(pts[i][0], pts[i][1], sinPhi0, cosPhi0, lam0);
-        if (p.z > 0.02) {
-          if (!drawing) { ctx.moveTo(p.sx, p.sy); drawing = true; }
-          else ctx.lineTo(p.sx, p.sy);
-        } else {
-          drawing = false;
+
+      for (let k = 0; k < tier.items.length; k++) {
+        const item = tier.items[k];
+        if (!item.isHuge) {
+          const cd = this.projectRad(item.cPhi, item.cLam, sinPhi0, cosPhi0, lam0);
+          if (cd.z < -item.sinRadius - 0.05) continue;
+        }
+        const pts = item.pts;
+        let drawing = false;
+        let prevX = 0;
+        let prevY = 0;
+        for (let i = 0; i < pts.length; i++) {
+          const p = this.projectRad(pts[i][0], pts[i][1], sinPhi0, cosPhi0, lam0);
+          if (p.z > 0.02) {
+            if (!drawing) {
+              ctx.moveTo(p.sx, p.sy);
+              drawing = true;
+            } else if (Math.abs(p.sx - prevX) > maxJump || Math.abs(p.sy - prevY) > maxJump) {
+              ctx.moveTo(p.sx, p.sy);
+            } else if (
+              (p.sx >= -pad && p.sx <= this.width + pad && p.sy >= -pad && p.sy <= this.height + pad) ||
+              (prevX >= -pad && prevX <= this.width + pad && prevY >= -pad && prevY <= this.height + pad)
+            ) {
+              ctx.lineTo(p.sx, p.sy);
+            } else {
+              ctx.moveTo(p.sx, p.sy);
+            }
+            prevX = p.sx;
+            prevY = p.sy;
+          } else {
+            drawing = false;
+          }
         }
       }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  _drawVosShips(ctx, P, sinPhi0, cosPhi0, lam0, ts) {
+    this.screenVosShips = [];
+    const list = this.vosShips;
+    const len = list.length;
+    if (len === 0) return;
+
+    const wPad = this.width + 20;
+    const hPad = this.height + 20;
+    const r = Math.max(2.6, Math.min(5.2, 2.5 + Math.log2(Math.max(1, this.zoom)) * 0.55));
+    const highlighted = [];
+
+    ctx.save();
+    // Batch regular VOS diamond beacons in 2 crisp passes (halo + filled diamond) for 60 FPS
+    ctx.fillStyle = P.vosGlow;
+    ctx.beginPath();
+    for (let i = 0; i < len; i++) {
+      const s = list[i];
+      const p = this.projectRad(s.lat * DEG2RAD, s.lon * DEG2RAD, sinPhi0, cosPhi0, lam0);
+      if (p.z < 0.05 || p.sx < -20 || p.sx > wPad || p.sy < -20 || p.sy > hPad) continue;
+      const isSel = s.id === this.selectedVosId;
+      const isHov = s.id === this.hoveredVosId;
+      this.screenVosShips.push({ ship: s, sx: p.sx, sy: p.sy });
+      if (isSel || isHov) {
+        highlighted.push({ ship: s, sx: p.sx, sy: p.sy, isSel, isHov });
+        continue;
+      }
+      ctx.moveTo(p.sx + r * 1.9, p.sy);
+      ctx.arc(p.sx, p.sy, r * 1.9, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    ctx.fillStyle = P.vosFill;
+    ctx.strokeStyle = P.vosStroke;
+    ctx.lineWidth = 0.85;
+    ctx.beginPath();
+    for (let i = 0; i < this.screenVosShips.length; i++) {
+      const item = this.screenVosShips[i];
+      if (item.ship.id === this.selectedVosId || item.ship.id === this.hoveredVosId) continue;
+      const { sx, sy } = item;
+      ctx.moveTo(sx, sy - r);
+      ctx.lineTo(sx + r, sy);
+      ctx.lineTo(sx, sy + r);
+      ctx.lineTo(sx - r, sy);
+      ctx.closePath();
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    // Draw hovered/selected VOS ships prominently on top with pulse ring
+    for (const h of highlighted) {
+      const hr = r * 1.45;
+      if (h.isSel) {
+        const pulse = 0.5 + 0.5 * Math.sin((ts || 0) * 0.005);
+        ctx.strokeStyle = `rgba(45, 212, 191, ${0.4 + pulse * 0.5})`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(h.sx, h.sy, hr + 5 + pulse * 5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#5eead4';
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(h.sx, h.sy - hr);
+      ctx.lineTo(h.sx + hr, h.sy);
+      ctx.lineTo(h.sx, h.sy + hr);
+      ctx.lineTo(h.sx - hr, h.sy);
+      ctx.closePath();
+      ctx.fill();
       ctx.stroke();
     }
     ctx.restore();

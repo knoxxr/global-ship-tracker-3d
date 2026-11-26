@@ -44,6 +44,8 @@ export function persistPrefs(state, globe, extra = {}) {
           autoRotate: globe.options.autoRotate,
           showDayNight: globe.options.showDayNight,
           showWakes: globe.options.showWakes,
+          showVosShips: globe.options.showVosShips,
+          showLanes: globe.options.showLanes,
           showChartTiles: globe.options.showChartTiles,
           showPorts: globe.options.showPorts,
           showLabels: globe.options.showLabels,
@@ -122,6 +124,8 @@ export function queryCommonDom() {
     btnAutoRotate: document.getElementById('btn-autorotate'),
     btnDayNight: document.getElementById('btn-daynight'),
     btnWakes: document.getElementById('btn-wakes'),
+    btnVos: document.getElementById('btn-vos'),
+    btnLanes: document.getElementById('btn-lanes'),
     btnPorts: document.getElementById('btn-ports'),
     btnLabels: document.getElementById('btn-labels'),
     coordReadout: document.getElementById('coord-readout'),
@@ -377,10 +381,13 @@ export function bindSharedUi({
 
   function closeInspector() {
     state.selectedMmsi = null;
+    state.selectedVos = null;
     state.followSelected = false;
     globe.setSelectedVessel(null, false);
+    globe.setSelectedVos(null);
     dom.inspector.classList.add('hidden');
     dom.inspector.classList.remove('expanded');
+    dom.inspector._lastHtml = null;
     document.body.classList.remove('inspector-open');
     renderVisibleList();
   }
@@ -483,6 +490,45 @@ export function bindSharedUi({
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(shareUrl)
           .then(() => showToast(t('toastVesselLinkCopied')))
+          .catch(() => showToast(t('toastUrlUpdated')));
+      } else {
+        showToast(t('toastUrlUpdated'));
+      }
+      return;
+    }
+    if (e.target.closest('#btn-center-vos')) {
+      const vos = state.selectedVos;
+      if (vos) {
+        if (isMobileViewport()) dom.inspector.classList.remove('expanded');
+        globe.flyTo(vos.lat, vos.lon, Math.max(globe.zoom, 4.5), 600);
+      }
+      return;
+    }
+    if (e.target.closest('#btn-measure-from-vos')) {
+      const vos = state.selectedVos;
+      if (!vos) return;
+      if (isMobileViewport()) dom.inspector.classList.remove('expanded');
+      globe.setMeasureMode(true, {
+        lat: vos.lat,
+        lon: vos.lon,
+        label: 'NOAA VOS',
+      });
+      if (dom.btnMeasure) dom.btnMeasure.classList.add('active');
+      showToast(t('toastMeasureFromVessel', { name: 'NOAA VOS' }));
+      return;
+    }
+    if (e.target.closest('#btn-share-vos')) {
+      const vos = state.selectedVos;
+      if (!vos) return;
+      const z = Math.max(4.5, Math.round(globe.zoom * 10) / 10);
+      const hash = `#lat=${vos.lat.toFixed(2)}&lon=${vos.lon.toFixed(2)}&z=${z}`;
+      const shareUrl = `${window.location.origin}${window.location.pathname}${window.location.search}${hash}`;
+      try {
+        window.history.replaceState(null, '', hash);
+      } catch { /* ignore */ }
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(shareUrl)
+          .then(() => showToast(t('toastViewLinkCopied')))
           .catch(() => showToast(t('toastUrlUpdated')));
       } else {
         showToast(t('toastUrlUpdated'));
@@ -692,9 +738,11 @@ export function bindSharedUi({
     });
   }
 
-  // Layer toggles (including high-zoom nautical chart tiles!)
+  // Layer toggles (including high-zoom nautical chart tiles, NOAA VOS, and shipping lanes!)
   const LAYER_BINDINGS = [
     [dom.btnClusters, 'showClusters'],
+    [dom.btnVos, 'showVosShips'],
+    [dom.btnLanes, 'showLanes'],
     [dom.btnCharts, 'showChartTiles'],
     [dom.btnBorders, 'showBorders'],
     [dom.btnAutoRotate, 'autoRotate'],
@@ -768,7 +816,7 @@ export function bindSharedUi({
         setPortFilter(null);
       } else if (isMobileViewport() && !dom.sidebar.classList.contains('collapsed')) {
         setSidebarOpen(false);
-      } else if (state.selectedMmsi) {
+      } else if (state.selectedMmsi || state.selectedVos) {
         closeInspector();
       }
       return;
